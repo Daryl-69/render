@@ -1,0 +1,9 @@
+2025-10-13 11:34:16,739 - __main__ - ERROR - ❌ Database initialization failed: 'charmap' codec can't encode character '\u2705' in position 0: character maps to <undefined>
+2025-10-13 12:07:57,942 - __main__ - ERROR - ❌ Database initialization failed: 'str' object has no attribute 'decode'
+2025-10-13 12:40:01,987 - __main__ - ERROR - ❌ Database initialization failed: 'str' object has no attribute 'decode'
+2025-10-13 12:40:48,053 - __main__ - ERROR - ❌ Database initialization failed: 'str' object has no attribute 'decode'
+2025-10-13 12:49:35,203 - __main__ - ERROR - ❌ Database initialization failed: 'str' object has no attribute 'decode'
+2025-10-13 14:11:17,087 - __main__ - ERROR - ❌ Database initialization failed: 'str' object has no attribute 'decode'
+2025-10-13 14:17:13,063 - __main__ - ERROR - ❌ Database initialization failed: 'str' object has no attribute 'decode'
+2025-10-14 00:39:03,625 - __main__ - ERROR - ❌ Database initialization failed: 'str' object has no attribute 'decode'
+2025-10-14 10:26:35,259 - __main__ - ERROR - ❌ Database initialization failed: 'str' object has no attribute 'decode'
