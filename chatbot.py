@@ -108,6 +108,7 @@ CORS(app, supports_credentials=True, resources={
             "https://saharasaathi.netlify.app",
             "https://sahara-sathi.onrender.com",
             "https://sehat-sahara.onrender.com",
+            "https://render-atua.onrender.com",
             "*"  # Allow all origins for static files
         ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
