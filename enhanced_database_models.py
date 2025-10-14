@@ -497,6 +497,9 @@ class MedicineOrder(db.Model):
     cancellation_reason = db.Column(db.String(200), nullable=True)
     cancelled_by = db.Column(db.String(50), nullable=True)  # customer, pharmacy, system
 
+    # Additional fields for frontend compatibility
+    estimated_delivery_time = db.Column(db.String(100), nullable=True)
+
     def get_items(self):
         """Get order items as list"""
         if self.items:
@@ -972,7 +975,8 @@ def seed_initial_pharmacies():
             "email": "apollo.pharmacy@pharm.com",
             "password": "password123",
             "phone_number": "+91 98765 43210",
-            "address": "123 Health St, Wellness Colony, Kolkata, WB 700091"
+            "address": "123 Health St, Wellness Colony, Kolkata, WB 700091",
+            "estimated_delivery_time": "30-45 mins"
         },
         {
             "pharmacy_id": "PHAR002",
@@ -980,7 +984,8 @@ def seed_initial_pharmacies():
             "email": "frankross.pharmacy@pharm.com",
             "password": "password123",
             "phone_number": "+91 98765 43211",
-            "address": "456 Medical Ave, Health District, Mumbai, MH 400001"
+            "address": "456 Medical Ave, Health District, Mumbai, MH 400001",
+            "estimated_delivery_time": "45-60 mins"
         },
         {
             "pharmacy_id": "PHAR003",
@@ -988,7 +993,8 @@ def seed_initial_pharmacies():
             "email": "wellnessforever.pharmacy@pharm.com",
             "password": "password123",
             "phone_number": "+91 98765 43212",
-            "address": "789 Care Blvd, Wellness Park, Delhi, DL 110001"
+            "address": "789 Care Blvd, Wellness Park, Delhi, DL 110001",
+            "estimated_delivery_time": "20-35 mins"
         }
     ]
 
@@ -1003,6 +1009,7 @@ def seed_initial_pharmacies():
                 password_hash=hashed_password,
                 phone_number=pharm_data["phone_number"],
                 address=pharm_data["address"],
+                estimated_delivery_time=pharm_data.get("estimated_delivery_time"),
                 is_active=True
             )
             db.session.add(new_pharmacy)
