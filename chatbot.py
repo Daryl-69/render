@@ -108,7 +108,7 @@ CORS(app, supports_credentials=True, resources={
             "https://saharasaathi.netlify.app",
             "https://sahara-sathi.onrender.com",
             "https://sehat-sahara.onrender.com",
-            "https://render-atua.onrender.com",
+            "https://render-atua.onrender.com", 
             "*"  # Allow all origins for static files
         ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -1990,9 +1990,11 @@ def get_pharmacies():
         for pharmacy in pharmacies:
             pharmacies_data.append({
                 "id": pharmacy.pharmacy_id,
+                "pharmacy_id": pharmacy.pharmacy_id,
                 "name": pharmacy.name,
                 "address": pharmacy.address,
                 "phone": pharmacy.phone_number,
+                "estimated_delivery_time": pharmacy.estimated_delivery_time,
                 "services": {
                     "homeDelivery": pharmacy.home_delivery,
                     "onlinePayment": pharmacy.online_payment,
@@ -2069,7 +2071,10 @@ def place_order():
             current_user = get_current_user()
 
         if not current_user:
+            logger.error(f"Place order: Authentication failed for user_id_param={user_id_param}")
             return jsonify({"success": False, "message": "Authentication required"}), 401
+
+        logger.info(f"Place order: Processing order for user {current_user.patient_id}")
 
         pharmacy_id = data.get("pharmacyId")
         items = data.get("items", [])
@@ -2080,29 +2085,88 @@ def place_order():
             pharmacy_id = str(pharmacy_id)
         pharmacy_id = pharmacy_id.strip() if pharmacy_id else ""
 
+        logger.info(f"Place order: pharmacy_id={pharmacy_id}, items_count={len(items)}")
+
         if not pharmacy_id or not items:
+            logger.error(f"Place order: Missing required data - pharmacy_id: {pharmacy_id}, items: {items}")
             return jsonify({"success": False, "message": "Pharmacy ID and items are required"}), 400
 
-        pharmacy = Pharmacy.query.filter_by(pharmacy_id=pharmacy_id, is_active=True).first()
-        if not pharmacy:
-            return jsonify({"success": False, "message": "Pharmacy not found"}), 404
+        # Try multiple pharmacy lookup methods
+        pharmacy = None
 
-        # Calculate total amount (mock calculation)
-        total_amount = sum(item.get("price", 0) * item.get("quantity", 1) for item in items)
+        # First try exact pharmacy_id match
+        pharmacy = Pharmacy.query.filter_by(pharmacy_id=pharmacy_id, is_active=True).first()
+        logger.info(f"Place order: Pharmacy lookup by pharmacy_id '{pharmacy_id}' - found: {pharmacy is not None}")
+
+        # If not found, try by name
+        if not pharmacy:
+            pharmacy = Pharmacy.query.filter_by(name=pharmacy_id, is_active=True).first()
+            logger.info(f"Place order: Pharmacy lookup by name '{pharmacy_id}' - found: {pharmacy is not None}")
+
+        # If still not found, try partial name match
+        if not pharmacy:
+            pharmacy = Pharmacy.query.filter(
+                Pharmacy.name.ilike(f'%{pharmacy_id}%'),
+                Pharmacy.is_active == True
+            ).first()
+            logger.info(f"Place order: Pharmacy partial name lookup '{pharmacy_id}' - found: {pharmacy is not None}")
+
+        if not pharmacy:
+            logger.error(f"Place order: Pharmacy not found for id/name '{pharmacy_id}'")
+            # List available pharmacies for debugging
+            available_pharmacies = Pharmacy.query.filter_by(is_active=True).all()
+            available_ids = [p.pharmacy_id for p in available_pharmacies]
+            available_names = [p.name for p in available_pharmacies]
+            logger.error(f"Place order: Available pharmacy IDs: {available_ids}")
+            logger.error(f"Place order: Available pharmacy names: {available_names}")
+            return jsonify({
+                "success": False,
+                "message": f"Pharmacy not found. Available pharmacies: {available_names[:5]}"
+            }), 404
+
+        logger.info(f"Place order: Found pharmacy {pharmacy.name} (ID: {pharmacy.pharmacy_id})")
+
+        # Validate items data
+        validated_items = []
+        for item in items:
+            if not isinstance(item, dict) or 'name' not in item or 'price' not in item or 'quantity' not in item:
+                logger.error(f"Place order: Invalid item format: {item}")
+                return jsonify({"success": False, "message": "Invalid item format in order"}), 400
+
+            validated_items.append({
+                'name': str(item['name']),
+                'price': float(item['price']),
+                'quantity': int(item['quantity'])
+            })
+
+        # Calculate total amount
+        total_amount = sum(item['price'] * item['quantity'] for item in validated_items)
         delivery_fee = 50.0 if pharmacy.home_delivery else 0.0
 
+        logger.info(f"Place order: Total amount: {total_amount}, Delivery fee: {delivery_fee}")
+
+        # Create order object
         order = MedicineOrder(
             user_id=current_user.id,
             pharmacy_id=pharmacy.id,
-            items=items,
+            items=validated_items,
             total_amount=total_amount,
             delivery_fee=delivery_fee,
             delivery_address=delivery_address or current_user.get_full_address(),
-            contact_phone=current_user.phone_number
+            contact_phone=current_user.phone_number,
+            payment_method=data.get("paymentMethod", "cod"),
+            status="placed"
         )
 
         db.session.add(order)
-        db.session.commit()
+
+        try:
+            db.session.commit()
+            logger.info(f"Place order: Successfully created order {order.order_id} for user {current_user.patient_id}")
+        except Exception as commit_error:
+            logger.error(f"Place order: Database commit failed: {commit_error}")
+            db.session.rollback()
+            return jsonify({"success": False, "message": "Failed to save order to database"}), 500
 
         # Update pharmacy dashboard with new order
         # This will be reflected when pharmacy logs in and checks their dashboard
@@ -2111,13 +2175,21 @@ def place_order():
             "success": True,
             "message": "Order placed successfully",
             "orderId": order.order_id,
-            "estimatedDelivery": "30-45 mins"
+            "estimatedDelivery": pharmacy.estimated_delivery_time or "30-45 mins",
+            "totalAmount": total_amount,
+            "deliveryFee": delivery_fee
         })
 
     except Exception as e:
         logger.error(f"Place order error: {e}")
+        logger.error(traceback.format_exc())
         update_system_state('place_order', success=False)
-        return jsonify({"success": False, "message": "Failed to place order"}), 500
+        db.session.rollback()
+        return jsonify({
+            "success": False,
+            "message": "Failed to place order",
+            "error_details": str(e)
+        }), 500
 
 @app.route("/v1/upload-prescription", methods=["POST"])
 def upload_prescription():
@@ -2369,7 +2441,14 @@ def get_pharmacy_dashboard():
         ).order_by(MedicineOrder.created_at.desc()).all()
 
         orders_data = [
-            {"id": order.order_id, "customer": User.query.get(order.user_id).full_name, "status": order.status}
+            {
+                "id": order.order_id,
+                "customer": User.query.get(order.user_id).full_name if User.query.get(order.user_id) else "Unknown",
+                "status": order.status,
+                "totalAmount": order.total_amount,
+                "createdAt": order.created_at.isoformat(),
+                "items": order.get_items()
+            }
             for order in new_orders
         ]
 
@@ -2379,9 +2458,11 @@ def get_pharmacy_dashboard():
         return jsonify({
             "success": True,
             "pharmacyName": pharmacy.name,
+            "pharmacyId": pharmacy.pharmacy_id,
             "newOrdersCount": len(orders_data),
             "pendingDeliveriesCount": MedicineOrder.query.filter_by(pharmacy_id=pharmacy.id, status='out_for_delivery').count(),
             "lowStockAlerts": low_stock_alerts,
+            "estimated_delivery_time": pharmacy.estimated_delivery_time,
             "orders": orders_data
         })
     except Exception as e:
@@ -2411,6 +2492,7 @@ def get_pharmacy_profile():
                 "email": pharmacy.email,
                 "phoneNumber": pharmacy.phone_number,
                 "address": pharmacy.address,
+                "estimated_delivery_time": pharmacy.estimated_delivery_time,
                 "services": {
                     "homeDelivery": pharmacy.home_delivery,
                     "onlinePayment": pharmacy.online_payment,
