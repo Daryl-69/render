@@ -1185,10 +1185,10 @@
                 ],
                 offlinePrescriptions: [{ doctor: "Local Store", type: "Offline", date: "2025-07-20", prescription: { medications: [{name: 'Antacid Syrup', dosage: '2 spoons after meals', time: 'After meals'}], tests: ['Ultrasound'] }}],
                 orders: [],
-                pharmacy: [ 
-                    {id: 1, name: "Apollo Pharmacy", address: "123, Park Street, Kolkata", delivery: "30-45 mins", contact: "9876543210"},
-                    {id: 2, name: "Frank Ross", address: "45, AJC Bose Road, Kolkata", delivery: "45-60 mins", contact: "9876543211"},
-                    {id: 3, name: "Wellness Forever", address: "78, Ballygunge Circular, Kolkata", delivery: "20-35 mins", contact: "9876543212"}
+                pharmacy: [
+                    {id: 1, pharmacy_id: "PHAR001", name: "Apollo Pharmacy", address: "123, Park Street, Kolkata", delivery: "30-45 mins", contact: "9876543210", estimated_delivery_time: "30-45 mins"},
+                    {id: 2, pharmacy_id: "PHAR002", name: "Frank Ross", address: "45, AJC Bose Road, Kolkata", delivery: "45-60 mins", contact: "9876543211", estimated_delivery_time: "45-60 mins"},
+                    {id: 3, pharmacy_id: "PHAR003", name: "Wellness Forever", address: "78, Ballygunge Circular, Kolkata", delivery: "20-35 mins", contact: "9876543212", estimated_delivery_time: "20-35 mins"}
                 ],
                 medicines: [ {id: 1, name: "Paracetamol 500mg", price: 20}, {id: 2, name: "Aspirin 75mg", price: 15}, {id: 3, name: "Ibuprofen 200mg", price: 35}, {id: 4, name: "Antacid Syrup", price: 80}, {id: 5, name: "Vitamin C 1000mg", price: 120} ],
                 booking: {
@@ -1763,7 +1763,7 @@
 
                 const renderPharmacies = () => {
                     pharmacyGrid.innerHTML = appData.pharmacy.map(p => `
-                        <div class="card pharmacy-card" data-pharmacy-id="${p.id}">
+                        <div class="card pharmacy-card" data-pharmacy-id="${p.pharmacy_id}">
                            <div class="info">
                              <h4>${p.name}</h4>
                              <p><small>${p.address}</small></p>
@@ -1775,7 +1775,7 @@
                              </div>
                            </div>
                            <div class="actions">
-                                <span><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M8.5 5.5a.5.5 0 0 0-1 0v3.5h3a.5.5 0 0 0 0-1h-2.5V5.5z"/><path d="M6.5 1A.5.5 0 0 1 7 .5h2a.5.5 0 0 1 0 1H7a.5.5 0 0 1-.5-.5zM8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"/></svg> ${p.delivery}</span>
+                                <span><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M8.5 5.5a.5.5 0 0 0-1 0v3.5h3a.5.5 0 0 0 0-1h-2.5V5.5z"/><path d="M6.5 1A.5.5 0 0 1 7 .5h2a.5.5 0 0 1 0 1H7a.5.5 0 0 1-.5-.5zM8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"/></svg> ${p.estimated_delivery_time || p.delivery}</span>
                                 <a href="tel:${p.contact}" class="btn btn-sm">📞 Contact</a>
                            </div>
                         </div>
@@ -1785,13 +1785,13 @@
 
                 const handlePharmacySelection = (e) => {
                     if(e.target.tagName === 'A') return; // Don't select if user clicks contact button
-                    const pharmacyId = parseInt(e.currentTarget.dataset.pharmacyId);
-                    selectedPharmacy = appData.pharmacy.find(p => p.id === pharmacyId);
+                    const pharmacyId = e.currentTarget.dataset.pharmacyId;
+                    selectedPharmacy = appData.pharmacy.find(p => p.pharmacy_id === pharmacyId);
 
                     pharmacySelectionContainer.style.display = 'none';
                     medicineOrderingContainer.style.display = 'block';
                     selectedPharmacyNameEl.textContent = `🏥 ${selectedPharmacy.name}`;
-                    pharmacyDeliveryInfoEl.textContent = `🚚 ${selectedPharmacy.delivery} • 📞 ${selectedPharmacy.contact}`;
+                    pharmacyDeliveryInfoEl.textContent = `🚚 ${selectedPharmacy.estimated_delivery_time || selectedPharmacy.delivery} • 📞 ${selectedPharmacy.contact}`;
                     renderMedicines();
                 };
 
@@ -2201,7 +2201,7 @@
 
                     const orderData = {
                         userId: user.patientId,
-                        pharmacyId: selectedPharmacy.id,
+                        pharmacyId: selectedPharmacy.pharmacy_id,
                         items: medicineCart.map(item => ({
                             id: item.id,
                             name: item.name,
@@ -4091,5 +4091,4 @@ Possible solutions:
         });
     </script>
 </body>
-
 </html>
