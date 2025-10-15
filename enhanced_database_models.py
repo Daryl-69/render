@@ -400,6 +400,9 @@ class Pharmacy(db.Model):
     average_rating = db.Column(db.Float, default=0.0)
     total_ratings = db.Column(db.Integer, default=0)
 
+    # Delivery information
+    estimated_delivery_time = db.Column(db.String(100), nullable=True)
+
     # Timestamps
     created_at = db.Column(db.DateTime, default=datetime.now)
     updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
@@ -496,9 +499,6 @@ class MedicineOrder(db.Model):
     # Cancellation details
     cancellation_reason = db.Column(db.String(200), nullable=True)
     cancelled_by = db.Column(db.String(50), nullable=True)  # customer, pharmacy, system
-
-    # Additional fields for frontend compatibility
-    estimated_delivery_time = db.Column(db.String(100), nullable=True)
 
     def get_items(self):
         """Get order items as list"""
@@ -956,8 +956,8 @@ def seed_initial_doctors():
             if existing_doctor.specialization != doc_data["specialization"]:
                 existing_doctor.specialization = doc_data["specialization"]
                 updated = True
-            if existing_doctor.password_hash != hashed_password.decode('utf-8'):
-                existing_doctor.password_hash = hashed_password.decode('utf-8')
+            if existing_doctor.password_hash != hashed_password:
+                existing_doctor.password_hash = hashed_password
                 updated = True
             if updated:
                 db.session.add(existing_doctor)
@@ -1019,8 +1019,8 @@ def seed_initial_pharmacies():
             if existing_pharmacy.name != pharm_data["name"]:
                 existing_pharmacy.name = pharm_data["name"]
                 updated = True
-            if existing_pharmacy.password_hash != hashed_password.decode('utf-8'):
-                existing_pharmacy.password_hash = hashed_password.decode('utf-8')
+            if existing_pharmacy.password_hash != hashed_password:
+                existing_pharmacy.password_hash = hashed_password
                 updated = True
             if updated:
                 db.session.add(existing_pharmacy)
