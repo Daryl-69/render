@@ -1159,12 +1159,12 @@
         // Dynamic API URL configuration
         
         // For local development, uncomment and modify:
-        // const API_BASE_URL = 'http://localhost:5000';
+        const API_BASE_URL = 'http://localhost:5000';
 
         // For local development, uncomment and modify:
-        
+
         // For Render deployment, uncomment if needed:
-        const API_BASE_URL = 'https://render-atua.onrender.com';
+        // const API_BASE_URL = 'https://render-atua.onrender.com';
 
         console.log('Using API base URL:', API_BASE_URL);
 
@@ -2222,23 +2222,73 @@
                         // First, let's check if user is authenticated by making a test request
                         const authTest = await fetch(`${API_BASE_URL}/v1/dashboard?userId=${user.patientId}`, {
                             method: 'GET',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
                             credentials: 'include'
                         });
-
+   
                         console.log('Auth test status:', authTest.status);
                         if (authTest.status === 401) {
                             console.log('User not authenticated, redirecting to login...');
                             alert('Your session has expired. Please log in again.');
                             window.location.href = '/index.html';
                             return;
+                        } else if (authTest.status === 404) {
+                            console.log('User not found in database, may need to re-register...');
+                            alert('User account not found. Please log in again.');
+                            window.location.href = '/index.html';
+                            return;
+                        } else if (!authTest.ok) {
+                            console.log('Auth test failed with status:', authTest.status);
+                            try {
+                                const errorData = await authTest.json();
+                                console.log('Auth error response:', errorData);
+   
+                                // Handle different error codes
+                                if (errorData.error_code === 'USER_INACTIVE') {
+                                    alert('Your account has been deactivated. Please contact support for assistance.');
+                                } else if (errorData.error_code === 'USER_NOT_FOUND') {
+                                    alert('User account not found. Please log in again or register if you are a new user.');
+                                } else if (errorData.error_code === 'NO_SESSION') {
+                                    alert('Your session has expired. Please log in again.');
+                                } else if (errorData.message) {
+                                    alert(`Authentication check failed: ${errorData.message}`);
+                                } else {
+                                    alert('Authentication check failed. Please log in again.');
+                                }
+                            } catch (parseError) {
+                                console.error('Failed to parse auth error response:', parseError);
+                                alert('Authentication check failed. Please log in again.');
+                            }
+                            window.location.href = '/index.html';
+                            return;
+                        }
+   
+                        console.log('Authentication check passed successfully');
+   
+                        // Also try to refresh the session to ensure it's still valid
+                        try {
+                            await fetch(`${API_BASE_URL}/v1/dashboard?userId=${user.patientId}&refresh=true`, {
+                                method: 'GET',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                credentials: 'include'
+                            });
+                            console.log('Session refresh completed');
+                        } catch (refreshError) {
+                            console.warn('Session refresh failed, but continuing with order placement:', refreshError);
                         }
 
-                        const response = await fetch(`${API_BASE_URL}/v1/orders`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            credentials: 'include',
-                            body: JSON.stringify(orderData)
-                        });
+                        // In patient.html, inside the placeOrder function
+
+const response = await fetch(`${API_BASE_URL}/v1/orders`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include', // <-- Add this line
+    body: JSON.stringify(orderData)
+});
 
                         console.log('Order response status:', response.status);
                         const data = await response.json();
@@ -3641,7 +3691,12 @@ Possible solutions:
                 try {
                     // --- CORRECTED CODE ---
                     // Switched from 'credentials: include' to the reliable userId parameter
-                    const response = await fetch(`${API_BASE_URL}/v1/dashboard?userId=${user.patientId}`);
+                    const response = await fetch(`${API_BASE_URL}/v1/dashboard?userId=${user.patientId}`, {
+                        method: 'GET',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
                     // --- END OF CORRECTION ---
 
                     const data = await response.json();
