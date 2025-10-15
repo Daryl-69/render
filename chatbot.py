@@ -342,41 +342,80 @@ def track_system_metrics():
 
 def get_current_user():
     """Security helper to get current authenticated user"""
-    role = session.get('role')
-    if role == 'doctor':
-        doctor_id = session.get('doctor_id')
-        if doctor_id:
-            try:
-                doctor = Doctor.query.filter_by(doctor_id=doctor_id).first()
-                if doctor and doctor.is_active:
-                    return doctor
-            except Exception as e:
-                logger.error(f"Error retrieving doctor {doctor_id}: {e}")
-                return None
-    elif role == 'pharmacy':
-        pharmacy_id = session.get('pharmacy_id')
-        if pharmacy_id:
-            try:
-                pharmacy = Pharmacy.query.filter_by(pharmacy_id=pharmacy_id).first()
-                if pharmacy and pharmacy.is_active:
-                    return pharmacy
-            except Exception as e:
-                logger.error(f"Error retrieving pharmacy {pharmacy_id}: {e}")
-                return None
-    else:
-        user_id = session.get('user_id')
-        if user_id:
-            try:
-                # Fetch user with role information
-                user = User.query.get(user_id)
-                if user:
-                    # Dynamically add role if it exists on the model, otherwise default
-                    user.role = getattr(user, 'role', 'patient')
-                return user
-            except Exception as e:
-                logger.error(f"Error retrieving user {user_id}: {e}")
-                return None
-    return None
+    try:
+        role = session.get('role')
+        logger.info(f"Getting current user for role: {role}")
+
+        if role == 'doctor':
+            doctor_id = session.get('doctor_id')
+            logger.info(f"Looking for doctor with ID: {doctor_id}")
+            if doctor_id:
+                try:
+                    doctor = Doctor.query.filter_by(doctor_id=doctor_id, is_active=True).first()
+                    if doctor:
+                        logger.info(f"Found active doctor: {doctor.full_name} ({doctor.doctor_id})")
+                        return doctor
+                    else:
+                        logger.warning(f"Doctor not found or inactive: {doctor_id}")
+                except Exception as e:
+                    logger.error(f"Error retrieving doctor {doctor_id}: {e}")
+                    return None
+
+        elif role == 'pharmacy':
+            pharmacy_id = session.get('pharmacy_id')
+            logger.info(f"Looking for pharmacy with ID: {pharmacy_id}")
+            if pharmacy_id:
+                try:
+                    pharmacy = Pharmacy.query.filter_by(pharmacy_id=pharmacy_id, is_active=True).first()
+                    if pharmacy:
+                        logger.info(f"Found active pharmacy: {pharmacy.name} ({pharmacy.pharmacy_id})")
+                        return pharmacy
+                    else:
+                        logger.warning(f"Pharmacy not found or inactive: {pharmacy_id}")
+                except Exception as e:
+                    logger.error(f"Error retrieving pharmacy {pharmacy_id}: {e}")
+                    return None
+
+        else:
+            # Default to patient role
+            user_id = session.get('user_id')
+            patient_id = session.get('patient_id')
+            logger.info(f"Looking for patient with user_id: {user_id}, patient_id: {patient_id}")
+
+            if user_id:
+                try:
+                    user = User.query.filter_by(id=user_id, is_active=True).first()
+                    if user:
+                        logger.info(f"Found active patient: {user.full_name} ({user.patient_id})")
+                        # Ensure role is set
+                        user.role = getattr(user, 'role', 'patient')
+                        return user
+                    else:
+                        logger.warning(f"Patient not found or inactive with ID: {user_id}")
+                except Exception as e:
+                    logger.error(f"Error retrieving user {user_id}: {e}")
+                    return None
+
+            elif patient_id:
+                try:
+                    user = User.query.filter_by(patient_id=patient_id, is_active=True).first()
+                    if user:
+                        logger.info(f"Found active patient by patient_id: {user.full_name} ({user.patient_id})")
+                        # Ensure role is set
+                        user.role = getattr(user, 'role', 'patient')
+                        return user
+                    else:
+                        logger.warning(f"Patient not found or inactive with patient_id: {patient_id}")
+                except Exception as e:
+                    logger.error(f"Error retrieving user by patient_id {patient_id}: {e}")
+                    return None
+
+        logger.warning(f"No authenticated user found for role: {role}")
+        return None
+
+    except Exception as e:
+        logger.error(f"Unexpected error in get_current_user: {e}")
+        return None
 
 def admin_required(f):
     @wraps(f)
@@ -390,11 +429,17 @@ def admin_required(f):
         return f(*args, **kwargs)
     return wrapper
 
-def create_user_session(user: User, request_info: dict):
+def create_user_session(user, request_info: dict):
     """Create and track user session"""
     try:
+        # Handle both User and Doctor/Pharmacy objects
+        user_id = getattr(user, 'id', None)
+        if not user_id:
+            logger.error("Cannot create session: user object has no ID")
+            return None
+
         user_session = UserSession(
-            user_id=user.id,
+            user_id=user_id,
             ip_address=request_info.get('remote_addr', '')[:45],
             user_agent=request_info.get('user_agent', '')[:500],
             device_type=determine_device_type(request_info.get('user_agent', ''))
@@ -405,9 +450,13 @@ def create_user_session(user: User, request_info: dict):
 
         # Store session ID for later reference
         session['session_record_id'] = user_session.id
+        logger.info(f"Created user session {user_session.id} for user {user_id}")
+        return user_session.id
 
     except Exception as e:
         logger.error(f"Error creating user session: {e}")
+        db.session.rollback()
+        return None
 
 def determine_device_type(user_agent: str) -> str:
     """Determine device type from user agent"""
@@ -428,8 +477,58 @@ def end_user_session():
             if user_session:
                 user_session.end_session()
                 db.session.commit()
+                logger.info(f"Ended user session {session_id}")
     except Exception as e:
         logger.error(f"Error ending user session: {e}")
+
+def validate_user_session():
+    """Validate if current user session is still active and valid"""
+    try:
+        session_id = session.get('session_record_id')
+        if not session_id:
+            return False
+
+        user_session = UserSession.query.get(session_id)
+        if not user_session or not user_session.is_active:
+            logger.warning(f"Session {session_id} is not active")
+            return False
+
+        if user_session.is_expired():
+            logger.warning(f"Session {session_id} has expired")
+            user_session.end_session()
+            db.session.commit()
+            return False
+
+        # Update last activity
+        user_session.update_activity()
+        db.session.commit()
+
+        return True
+    except Exception as e:
+        logger.error(f"Error validating user session: {e}")
+        return False
+
+def refresh_user_session():
+    """Refresh the current user session"""
+    try:
+        current_user = get_current_user()
+        if current_user:
+            # Update last activity in session
+            session['last_activity'] = datetime.now().isoformat()
+
+            # Update session record in database
+            session_id = session.get('session_record_id')
+            if session_id:
+                user_session = UserSession.query.get(session_id)
+                if user_session:
+                    user_session.update_activity()
+                    db.session.commit()
+
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error refreshing user session: {e}")
+        return False
 
 def convert_numpy_types(obj):
     """Recursively converts numpy types to native Python types in a dictionary."""
@@ -2063,16 +2162,83 @@ def place_order():
         # Allow authentication via userId in request data for API calls
         user_id_param = data.get("userId")
         current_user = None
+
         if user_id_param:
+            # Try to find user by patient_id first
             current_user = User.query.filter_by(patient_id=user_id_param, is_active=True).first()
+            if current_user:
+                logger.info(f"Place order: User authenticated via userId parameter: {current_user.patient_id}")
+                # Refresh the session since we found the user
+                refresh_user_session()
+            else:
+                logger.warning(f"Place order: User not found with patient_id: {user_id_param}")
 
-        # Fallback to session authentication
+        # Fallback to session authentication if userId lookup failed
         if not current_user:
+            # First validate the current session
+            if not validate_user_session():
+                logger.warning("Place order: Session validation failed")
+
             current_user = get_current_user()
+            if current_user:
+                logger.info(f"Place order: User authenticated via session: {getattr(current_user, 'patient_id', 'unknown')}")
+                # Refresh the session since authentication succeeded
+                refresh_user_session()
 
         if not current_user:
-            logger.error(f"Place order: Authentication failed for user_id_param={user_id_param}")
-            return jsonify({"success": False, "message": "Authentication required"}), 401
+            logger.error(f"Place order: Authentication failed for user_id_param={user_id_param}, session check also failed")
+
+            # Provide more specific error messages based on what we know
+            if user_id_param:
+                # Check if user exists but is inactive
+                inactive_user = User.query.filter_by(patient_id=user_id_param).first()
+                if inactive_user and not inactive_user.is_active:
+                    logger.error(f"Place order: User {user_id_param} exists but is inactive")
+                    return jsonify({
+                        "success": False,
+                        "message": "Your account has been deactivated. Please contact support.",
+                        "error_code": "USER_INACTIVE",
+                        "user_id_provided": user_id_param
+                    }), 403
+                else:
+                    logger.error(f"Place order: User {user_id_param} not found in database")
+                    return jsonify({
+                        "success": False,
+                        "message": "Authentication required. Please log in again.",
+                        "error_code": "USER_NOT_FOUND",
+                        "user_id_provided": user_id_param
+                    }), 401
+            else:
+                logger.error("Place order: No user_id provided and no valid session")
+                return jsonify({
+                    "success": False,
+                    "message": "Authentication required. Please log in again.",
+                    "error_code": "NO_SESSION",
+                    "user_id_provided": None
+                }), 401
+
+        # Additional authentication validation: Check if user has been active recently
+        if current_user.last_login:
+            # Check if user hasn't logged in for more than 30 days
+            days_since_last_login = (datetime.now() - current_user.last_login).days
+            if days_since_last_login > 30:
+                logger.warning(f"Place order: User {current_user.patient_id} last login was {days_since_last_login} days ago")
+                return jsonify({
+                    "success": False,
+                    "message": "Your session has expired. Please log in again.",
+                    "error_code": "SESSION_EXPIRED",
+                    "days_since_last_login": days_since_last_login
+                }), 401
+
+        # Validate that the user has proper permissions (is a patient)
+        if getattr(current_user, 'role', 'patient') != 'patient':
+            logger.error(f"Place order: User {current_user.patient_id} has role '{getattr(current_user, 'role', 'patient')}' but tried to place order")
+            return jsonify({
+                "success": False,
+                "message": "Only patients can place medicine orders.",
+                "error_code": "INVALID_ROLE",
+                "user_role": getattr(current_user, 'role', 'patient')
+            }), 403
 
         logger.info(f"Place order: Processing order for user {current_user.patient_id}")
 
@@ -2504,6 +2670,57 @@ def get_pharmacy_profile():
     except Exception as e:
         logger.error(f"Error fetching pharmacy profile: {e}", exc_info=True)
         return jsonify({"error": "Failed to load pharmacy profile"}), 500
+
+@app.route("/v1/test-order-auth", methods=["POST"])
+def test_order_auth():
+    """Test endpoint to verify order authentication flow"""
+    try:
+        data = request.get_json() or {}
+        user_id_param = data.get("userId")
+
+        if not user_id_param:
+            return jsonify({"error": "userId is required"}), 400
+
+        # Test the same authentication logic as the orders endpoint
+        current_user = None
+
+        if user_id_param:
+            current_user = User.query.filter_by(patient_id=user_id_param, is_active=True).first()
+            if current_user:
+                logger.info(f"Test: User authenticated via userId parameter: {current_user.patient_id}")
+            else:
+                logger.warning(f"Test: User not found with patient_id: {user_id_param}")
+
+        if not current_user:
+            current_user = get_current_user()
+            if current_user:
+                logger.info(f"Test: User authenticated via session: {getattr(current_user, 'patient_id', 'unknown')}")
+
+        if not current_user:
+            return jsonify({
+                "success": False,
+                "message": "Authentication failed",
+                "error_code": "USER_NOT_FOUND",
+                "user_id_provided": user_id_param,
+                "session_valid": validate_user_session()
+            }), 401
+
+        return jsonify({
+            "success": True,
+            "message": "Authentication successful",
+            "user_id": current_user.patient_id,
+            "user_name": current_user.full_name,
+            "session_valid": validate_user_session(),
+            "session_info": {
+                "session_id": session.get('session_record_id'),
+                "role": session.get('role'),
+                "login_time": session.get('login_time')
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"Test order auth error: {e}")
+        return jsonify({"error": "Test failed", "details": str(e)}), 500
     
 
 # WebRTC signaling endpoints
@@ -2621,7 +2838,7 @@ def not_found(error):
             "/v1/button-action", "/v1/user-progress", "/v1/post-appointment-feedback",
             "/v1/admin/users", "/v1/admin/grievances",
             "/v1/doctor/dashboard", "/v1/pharmacy/dashboard", "/v1/pharmacy/profile",
-            "/v1/test-prescription"  # Test endpoint
+            "/v1/test-prescription", "/v1/test-order-auth"  # Test endpoints
         ]
     }), 404
 
