@@ -34,10 +34,7 @@ Flask-SocketIO
 gevent
 
 gevent-websocket==0.10.1
-
-agora_token_builder
-
-
-werkzeug.middleware.proxy
+agora-token-builder
+werkzeug>=2.0
 
 
