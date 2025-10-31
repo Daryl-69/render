@@ -5,11 +5,12 @@ Simplified conversation tracking and user context management for health app navi
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 from collections import defaultdict, deque
-
+import pytz
+from enhanced_database_models import User, db, KeyValueStore
 @dataclass
 class UserProfile:
     """Enhanced user profile for Sehat Sahara Health Assistant with progress tracking"""
@@ -36,7 +37,7 @@ class UserProfile:
     post_appointment_feedback_pending: bool = False
     medicine_reminders: List[Dict[str, Any]] = field(default_factory=list)
 
-    # Interactive UI state
+    # Interactive UI state - Only track actual buttons, not conversational features
     show_appointment_button: bool = False
     show_medicine_scan_button: bool = False
     show_prescription_button: bool = False
@@ -62,13 +63,13 @@ class UserProfile:
             'location': self.location,
             'conversation_history': self.conversation_history[-10:],  # Keep last 10 turns
             'current_session_id': self.current_session_id,
-            'last_interaction': self.last_interaction.isoformat(),
+            'last_interaction': self.last_interaction.isoformat() if isinstance(self.last_interaction, datetime) else str(self.last_interaction),
             'message_count': self.message_count,
             'current_task': self.current_task,
             'task_context': self.task_context,
             'appointment_status': self.appointment_status,
             'prescription_summary': self.prescription_summary,
-            'last_appointment_date': self.last_appointment_date.isoformat() if self.last_appointment_date else None,
+            'last_appointment_date': self.last_appointment_date.isoformat() if self.last_appointment_date and isinstance(self.last_appointment_date, datetime) else (str(self.last_appointment_date) if self.last_appointment_date else None),
             'post_appointment_feedback_pending': self.post_appointment_feedback_pending,
             'medicine_reminders': self.medicine_reminders,
             'show_appointment_button': self.show_appointment_button,
@@ -116,7 +117,10 @@ class UserProfile:
         last_interaction_str = data.get('last_interaction')
         if last_interaction_str:
             try:
-                profile.last_interaction = datetime.fromisoformat(last_interaction_str)
+                if isinstance(last_interaction_str, str):
+                    profile.last_interaction = datetime.fromisoformat(last_interaction_str)
+                else:
+                    profile.last_interaction = datetime.now()
             except:
                 profile.last_interaction = datetime.now()
 
@@ -124,7 +128,10 @@ class UserProfile:
         last_appointment_str = data.get('last_appointment_date')
         if last_appointment_str:
             try:
-                profile.last_appointment_date = datetime.fromisoformat(last_appointment_str)
+                if isinstance(last_appointment_str, str):
+                    profile.last_appointment_date = datetime.fromisoformat(last_appointment_str)
+                else:
+                    profile.last_appointment_date = None
             except:
                 profile.last_appointment_date = None
 
@@ -155,24 +162,22 @@ class ProgressiveConversationMemory:
         
         self.logger.info("✅ Sehat Sahara Conversation Memory initialized")
     
+    # In conversation_memory.py
+
+    # Replace the create_or_get_user function with this corrected version:
     def create_or_get_user(self, user_id: str, **kwargs) -> UserProfile:
         """Create or retrieve user profile"""
         if user_id not in self.user_profiles:
             self.user_profiles[user_id] = UserProfile(
                 user_id=user_id,
-                patient_id=kwargs.get('patient_id', ''),
+                patient_id=kwargs.get('patient_id', user_id), # Use user_id as fallback
                 full_name=kwargs.get('full_name', ''),
                 preferred_language=kwargs.get('preferred_language', 'hi'),
                 location=kwargs.get('location', '')
-            )
+                )
             self.logger.info(f"Created new user profile for: {user_id}")
-        else:
-            # Update existing profile with new information
-            profile = self.user_profiles[user_id]
-            for key, value in kwargs.items():
-                if hasattr(profile, key) and value:
-                    setattr(profile, key, value)
-        
+    
+    # Always return the existing or newly created profile
         return self.user_profiles[user_id]
     
     def add_conversation_turn(self,
@@ -244,9 +249,11 @@ class ProgressiveConversationMemory:
     def set_current_task(self, user_id: str, task: str, context: Dict[str, Any] = None) -> None:
         """Set current task for user (e.g., appointment booking flow)"""
         profile = self.create_or_get_user(user_id)
+        old_task = profile.current_task
+
         profile.current_task = task
         profile.task_context = context or {}
-        
+
         # Track active task
         self.active_tasks[user_id] = {
             'task': task,
@@ -254,13 +261,22 @@ class ProgressiveConversationMemory:
             'started_at': datetime.now(),
             'status': 'active'
         }
-        
-        self.logger.info(f"Set current task for user {user_id}: {task}")
+
+        # Update last interaction time to keep conversation alive
+        profile.last_interaction = datetime.now()
+
+        # Enhanced logging for debugging
+        if old_task and old_task != task:
+            self.logger.info(f"Task changed for user {user_id}: '{old_task}' -> '{task}'")
+        else:
+            self.logger.info(f"Set current task for user {user_id}: {task}")
     
     def get_current_task(self, user_id: str) -> Dict[str, Any]:
         """Get current task and context for user"""
         if user_id in self.user_profiles:
             profile = self.user_profiles[user_id]
+            # Ensure last interaction is updated to keep conversation alive
+            profile.last_interaction = datetime.now()
             return {
                 'task': profile.current_task,
                 'context': profile.task_context
@@ -272,24 +288,54 @@ class ProgressiveConversationMemory:
         if user_id in self.user_profiles:
             profile = self.user_profiles[user_id]
             completed_task = profile.current_task
-            
+
             # Update statistics based on completed task
             if completed_task == 'appointment_booking':
                 profile.total_appointments_booked += 1
             elif completed_task == 'health_record_request':
                 profile.total_health_records_accessed += 1
-            
+
             # Clear current task
             profile.current_task = ""
             profile.task_context = {}
-            
+
             # Update active tasks
             if user_id in self.active_tasks:
                 self.active_tasks[user_id]['status'] = 'completed'
                 self.active_tasks[user_id]['completed_at'] = datetime.now()
                 self.active_tasks[user_id]['result'] = task_result or {}
-            
+
             self.logger.info(f"Completed task for user {user_id}: {completed_task}")
+
+            # Special handling for symptom triage completion
+            if completed_task == 'symptom_triage':
+                # Update button visibility for medicine recommendations
+                self.update_button_visibility(user_id, 'medicine_recommendation')
+
+    def update_conversation_stage_db(self, user_id: str, stage: str) -> None:
+        """Update conversation stage in database (requires database session)"""
+        # This method should be called from within a database session context
+        # Import here to avoid circular imports
+        try:
+            
+            user = User.query.filter_by(patient_id=user_id).first()
+            if user:
+                user.update_conversation_stage(stage)
+                db.session.commit()
+                self.logger.info(f"Updated conversation stage for user {user_id}: {stage}")
+        except Exception as e:
+            self.logger.error(f"Error updating conversation stage for user {user_id}: {e}")
+
+    def get_conversation_stage_db(self, user_id: str) -> str:
+        """Get conversation stage from database"""
+        try:
+            
+            user = User.query.filter_by(patient_id=user_id).first()
+            if user:
+                return getattr(user, 'current_conversation_stage', 'general')
+        except Exception as e:
+            self.logger.error(f"Error getting conversation stage for user {user_id}: {e}")
+        return 'general'
     
     def update_user_preferences(self, user_id: str, preferences: Dict[str, Any]) -> None:
         """Update user preferences"""
@@ -367,7 +413,18 @@ class ProgressiveConversationMemory:
                 'message_count': profile.message_count
             }
         }
-    
+    def recalculate_all_next_alerts(self, user_id: str):
+        """Recalculates the next alert time for all of a user's reminders."""
+        profile = self.create_or_get_user(user_id)
+        for reminder in profile.medicine_reminders:
+            if reminder.get('reminder_enabled', True):
+                user_timezone = reminder.get("timezone", "UTC")
+                times_list = reminder.get("times", [])
+                if times_list:
+                    # Clear the sent flag and calculate the next time
+                    reminder['alert_sent'] = False
+                    reminder['next_alert_utc'] = self._calculate_next_utc_timestamp(times_list, user_timezone)
+
     def get_session_context(self, session_id: str) -> Dict[str, Any]:
         """Get context for a specific session"""
         return self.session_contexts.get(session_id, {})
@@ -445,47 +502,41 @@ class ProgressiveConversationMemory:
             return False
     
     def save_to_file(self, filepath: str) -> bool:
-        """Save conversation memory to file"""
+        """Saves conversation memory to the database."""
         try:
-            data = {
-                'user_profiles': {uid: profile.to_dict() for uid, profile in self.user_profiles.items()},
-                'session_contexts': self.session_contexts,
-                'active_tasks': self.active_tasks,
-                'conversation_stats': dict(self.conversation_stats),
-                'export_timestamp': datetime.now().isoformat()
-            }
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            
-            self.logger.info(f"Conversation memory saved to {filepath}")
+            json_string = json.dumps({
+                'user_profiles': {uid: profile.to_dict() for uid, profile in self.user_profiles.items()}
+                })
+            record = KeyValueStore.query.filter_by(key='conversation_memory').first()
+            if record:
+                record.value = json_string
+            else:
+                record = KeyValueStore(key='conversation_memory', value=json_string)
+                db.session.add(record)
+        
+            db.session.commit()
+            self.logger.info("Conversation memory saved to DATABASE.")
             return True
-            
         except Exception as e:
-            self.logger.error(f"Error saving conversation memory: {e}")
+            self.logger.error(f"Error saving conversation memory to database: {e}")
+            db.session.rollback()
             return False
     
     def load_from_file(self, filepath: str) -> bool:
         """Load conversation memory from file"""
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            # Load user profiles
-            self.user_profiles = {}
-            for uid, profile_data in data.get('user_profiles', {}).items():
-                self.user_profiles[uid] = UserProfile.from_dict(profile_data)
-
-            # Load other data
-            self.session_contexts = data.get('session_contexts', {})
-            self.active_tasks = data.get('active_tasks', {})
-            self.conversation_stats = defaultdict(int, data.get('conversation_stats', {}))
-
-            self.logger.info(f"Conversation memory loaded from {filepath}")
+            record = KeyValueStore.query.filter_by(key='conversation_memory').first()
+            if record:
+                data = json.loads(record.value)
+                self.user_profiles = {}
+                for uid, profile_data in data.get('user_profiles', {}).items():
+                    self.user_profiles[uid] = UserProfile.from_dict(profile_data)
+                self.logger.info("Conversation memory loaded from DATABASE.")
+            else:
+                self.logger.warning("No conversation memory found in database. Starting fresh.")
             return True
-
         except Exception as e:
-            self.logger.error(f"Error loading conversation memory: {e}")
+            self.logger.error(f"Error loading conversation memory from database: {e}")
             return False
 
     def update_appointment_status(self, user_id: str, appointment_id: str, status: str, appointment_date: datetime = None) -> None:
@@ -556,25 +607,78 @@ class ProgressiveConversationMemory:
             'medicine_reminders_count': len(profile.medicine_reminders),
             'prescription_summary_available': len(profile.prescription_summary) > 0
         }
+    # Add this helper function inside the ProgressiveConversationMemory class
+    def _calculate_next_utc_timestamp(self, times_list, user_timezone_str):
+        """Calculates the next upcoming alert time in UTC."""
+        try:
+            user_timezone = pytz.timezone(user_timezone_str)
+        except pytz.UnknownTimeZoneError:
+            user_timezone = pytz.timezone("UTC") # Fallback to UTC
+        now_user_tz = datetime.now(user_timezone)
+        next_alert_time = None
+
+    # Sort the times to find the next one in the day
+        sorted_times = sorted([time.fromisoformat(t) for t in times_list])
+
+        for t in sorted_times:
+            potential_alert = now_user_tz.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+            if potential_alert > now_user_tz:
+                next_alert_time = potential_alert
+                break
+
+    # If all times for today have passed, schedule for the first time tomorrow
+        if next_alert_time is None:
+            tomorrow = now_user_tz + timedelta(days=1)
+            first_time_tomorrow = sorted_times[0]
+            next_alert_time = tomorrow.replace(hour=first_time_tomorrow.hour, minute=first_time_tomorrow.minute, second=0, microsecond=0)
+
+    # Convert the final alert time to a UTC ISO string
+        return next_alert_time.astimezone(pytz.utc).isoformat()
 
     def schedule_medicine_reminder(self, user_id: str, medicine_data: Dict[str, Any]) -> None:
         """Schedule medicine reminders for user"""
         profile = self.create_or_get_user(user_id)
 
+        # --- FIX: Calculate frequency and add start_date on the backend ---
+        times_list = medicine_data.get('times', [])
+        num_times = len(times_list)
+        frequency_text = "As prescribed"
+        if num_times == 1:
+            frequency_text = "Once a day"
+        elif num_times == 2:
+            frequency_text = "Twice a day"
+        elif num_times == 3:
+            frequency_text = "Thrice a day"
+        elif num_times > 3:
+            frequency_text = f"{num_times} times a day"
+        
+    # --- NEW: Calculate and store the next alert time in UTC ---
+        next_alert_utc = None
+        if times_list:
+            user_timezone = medicine_data.get("timezone", "UTC")
+            next_alert_utc = self._calculate_next_utc_timestamp(times_list, user_timezone)
+
         reminder = {
             'medicine_name': medicine_data['name'],
             'dosage': medicine_data['dosage'],
-            'frequency': medicine_data['frequency'],
-            'times': medicine_data['times'],
+            'frequency': frequency_text,  # Use the calculated frequency
+            'times': times_list,
             'duration_days': medicine_data['duration_days'],
-            'start_date': medicine_data['start_date'],
+            'start_date': datetime.now().strftime('%Y-%m-%d'), # Add the start date automatically
             'instructions': medicine_data.get('instructions', ''),
             'reminder_enabled': True,
-            'created_at': datetime.now().isoformat()
+            'created_at': datetime.now().isoformat(),
+            'next_alert_utc': next_alert_utc  # <-- STORE THE UTC TIMESTAMP
         }
+        # --- END FIX ---
 
-        profile.medicine_reminders.append(reminder)
-        self.logger.info(f"Added medicine reminder for user {user_id}: {medicine_data['name']}")
+        # Avoid adding duplicate reminders
+        existing_reminders = {r['medicine_name'].lower() for r in profile.medicine_reminders}
+        if reminder['medicine_name'].lower() not in existing_reminders:
+            profile.medicine_reminders.append(reminder)
+            self.logger.info(f"Added medicine reminder for user {user_id}: {medicine_data['name']}")
+        else:
+            self.logger.warning(f"Reminder for {medicine_data['name']} already exists for user {user_id}. Skipping.")
 
     def get_medicine_reminders(self, user_id: str) -> List[Dict[str, Any]]:
         """Get active medicine reminders for user"""
@@ -614,7 +718,47 @@ class ProgressiveConversationMemory:
 
         return alerts
     # Add these two new functions inside the ProgressiveConversationMemory class
+    # In conversation_memory.py, inside the ProgressiveConversationMemory class
 
+    def update_medicine_reminder(self, user_id: str, original_medicine_name: str, new_medicine_data: Dict[str, Any]):
+        """Finds and updates an existing medicine reminder."""
+        profile = self.create_or_get_user(user_id)
+        
+        # Calculate frequency for the updated data
+        times_list = new_medicine_data.get('times', [])
+        num_times = len(times_list)
+        frequency_text = "As prescribed"
+        if num_times == 1: frequency_text = "Once a day"
+        elif num_times == 2: frequency_text = "Twice a day"
+        elif num_times == 3: frequency_text = "Thrice a day"
+        elif num_times > 3: frequency_text = f"{num_times} times a day"
+
+        for i, reminder in enumerate(profile.medicine_reminders):
+            if reminder.get('medicine_name') == original_medicine_name:
+                # Update the existing reminder in place
+                profile.medicine_reminders[i]['medicine_name'] = new_medicine_data['name']
+                profile.medicine_reminders[i]['dosage'] = new_medicine_data['dosage']
+                profile.medicine_reminders[i]['times'] = new_medicine_data['times']
+                profile.medicine_reminders[i]['duration_days'] = new_medicine_data['duration_days']
+                profile.medicine_reminders[i]['instructions'] = new_medicine_data.get('instructions', '')
+                profile.medicine_reminders[i]['frequency'] = frequency_text # Update frequency
+                
+                self.logger.info(f"Updated reminder '{original_medicine_name}' for user {user_id}")
+                return
+        
+        self.logger.warning(f"Could not find reminder '{original_medicine_name}' to update for user {user_id}")
+
+    def delete_medicine_reminder(self, user_id: str, medicine_name: str):
+        """Finds and deletes an existing medicine reminder."""
+        profile = self.create_or_get_user(user_id)
+        
+        original_length = len(profile.medicine_reminders)
+        profile.medicine_reminders = [r for r in profile.medicine_reminders if r.get('medicine_name') != medicine_name]
+        
+        if len(profile.medicine_reminders) < original_length:
+            self.logger.info(f"Deleted reminder '{medicine_name}' for user {user_id}")
+        else:
+            self.logger.warning(f"Could not find reminder '{medicine_name}' to delete for user {user_id}")
     def add_prescription_summary(self, user_id: str, prescription_data: Dict[str, Any]) -> None:
         """
         Adds a new prescription summary to the user's profile.
@@ -735,6 +879,33 @@ class ProgressiveConversationMemory:
 
         if new_reminders_created > 0:
             self.logger.info(f"Auto-generated {new_reminders_created} new medicine reminders for user {profile.user_id}.")
+
+    def update_button_visibility(self, user_id: str, intent: str) -> None:
+        """Update which buttons should be shown based on user intent - only for actual button features"""
+        profile = self.create_or_get_user(user_id)
+
+        # Reset all button visibility
+        profile.show_appointment_button = False
+        profile.show_medicine_scan_button = False
+        profile.show_prescription_button = False
+
+        # Show appropriate buttons based on intent - only for button-based features
+        if intent == 'appointment_booking':
+            profile.show_appointment_button = True
+        elif intent == 'medicine_scan':
+            profile.show_medicine_scan_button = True
+        elif intent == 'prescription_upload':
+            profile.show_prescription_button = True
+        elif intent in ['prescription_inquiry', 'find_medicine']:
+            # Show both medicine scan and prescription buttons for medicine-related queries
+            profile.show_medicine_scan_button = True
+            profile.show_prescription_button = True
+        elif intent == 'medicine_recommendation':
+            # Show medicine-related buttons for symptom checker recommendations
+            profile.show_medicine_scan_button = True
+            profile.show_prescription_button = True
+
+        self.logger.info(f"Updated button visibility for user {user_id} based on intent: {intent}")
 
 # Global instance for easy import
 conversation_memory = ProgressiveConversationMemory()

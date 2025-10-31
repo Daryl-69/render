@@ -27,5 +27,15 @@ python-dotenv
 groq
 langdetect
 bcrypt
+pywebpush
+APScheduler
+py-vapid
+Flask-SocketIO
+gevent
+
+gevent-websocket==0.10.1
+
+
+
 
 

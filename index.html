@@ -1,33 +1,3 @@
-<!--  2025-10-14 16:11:22,260 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:22] "POST /v1/register HTTP/1.1" 201 -
-2025-10-14 16:11:25,731 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:25] "OPTIONS /v1/login HTTP/1.1" 200 -
-2025-10-14 16:11:28,556 - __main__ - INFO - ✅ User login successful: DED (PAT000003) with role 'patient'
-2025-10-14 16:11:28,557 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:28] "POST /v1/login HTTP/1.1" 200 -
-2025-10-14 16:11:28,764 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:28] "GET /v1/doctors HTTP/1.1" 200 -
-2025-10-14 16:11:28,925 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:28] "GET /v1/appointments?userId=PAT000003 HTTP/1.1" 200 -
-2025-10-14 16:11:29,053 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:29] "GET /v1/dashboard?userId=PAT000003 HTTP/1.1" 200 -
-2025-10-14 16:11:29,176 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:29] "GET /v1/dashboard?userId=PAT000003 HTTP/1.1" 200 -
-2025-10-14 16:11:29,315 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:29] "OPTIONS /v1/prescription-summary HTTP/1.1" 200 -
-2025-10-14 16:11:29,325 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:29] "OPTIONS /v1/user-progress HTTP/1.1" 200 -
-2025-10-14 16:11:29,354 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:29] "OPTIONS /v1/medicine-reminders HTTP/1.1" 200 -
-2025-10-14 16:11:29,424 - __main__ - INFO - Prescription summary endpoint called
-2025-10-14 16:11:29,424 - __main__ - INFO - Prescription summary request: user_id=PAT000003, prescription_id=None
-2025-10-14 16:11:29,424 - conversation_memory - INFO - Created new user profile for: PAT000003
-2025-10-14 16:11:29,425 - conversation_memory - WARNING - No prescription summaries found for user PAT000003
-2025-10-14 16:11:29,425 - __main__ - INFO - Found prescription data: False
-2025-10-14 16:11:29,425 - __main__ - WARNING - No prescription found for user PAT000003
-2025-10-14 16:11:29,425 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:29] "POST /v1/prescription-summary HTTP/1.1" 404 -
-2025-10-14 16:11:29,427 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:29] "GET /v1/test-prescription HTTP/1.1" 200 -
-2025-10-14 16:11:29,432 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:29] "POST /v1/user-progress HTTP/1.1" 200 -
-2025-10-14 16:11:29,465 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:29] "POST /v1/medicine-reminders HTTP/1.1" 200 -
-/opt/render/project/src/chatbot.py:360: LegacyAPIWarning: The Query.get() method is considered legacy as of the 1.x series of SQLAlchemy and becomes a legacy construct in 2.0. The method is now available as Session.get() (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
-  user = User.query.get(user_id)
-2025-10-14 16:11:53,012 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:53] "GET /v1/dashboard?userId=PAT000003 HTTP/1.1" 200 -
-2025-10-14 16:11:53,259 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:53] "GET /v1/dashboard?userId=PAT000003 HTTP/1.1" 200 -
-2025-10-14 16:11:53,381 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:53] "OPTIONS /v1/orders HTTP/1.1" 200 -
-2025-10-14 16:11:53,492 - __main__ - ERROR - Place order error: 'int' object has no attribute 'strip'
-2025-10-14 16:11:53,493 - werkzeug - INFO - 127.0.0.1 - - [14/Oct/2025 16:11:53] "POST /v1/orders HTTP/1.1" 500 - -->
-
-
 <!-- line 708 for admin,doc,saathi,pharmachy id pass -->
 <!DOCTYPE html>
 <html lang="en">
@@ -715,7 +685,7 @@
                                 <option value="doctor" data-key="role_doctor">Doctor</option>
                                 <option value="admin" data-key="role_admin">Admin</option>
                                 <option value="saathi" data-key="role_saathi">Saathi</option>
-                                <option value="store" data-key="role_store">Store</option>
+                                <option value="pharmacy" data-key="role_store">Store</option>
                             </select>
                         </div>
                         <div class="form-group">
@@ -762,7 +732,11 @@
 
 <script>
     document.addEventListener('DOMContentLoaded', function() {
-        const API_BASE_URL = 'https://sahara-sathi.onrender.com/v1';
+        //  const API_BASE_URL = 'https://sahara-sathi.onrender.com/v1';
+        //  const API_BASE_URL= 'http://192.168.29.246:3000/patient.html?serverWindowId=6271c060-0268-4c35-a298-5c8290675359';
+        //   const API_BASE_URL = 'http://localhost:5500';
+        // const API_BASE_URL = 'http://localhost:5500';
+//  const API_BASE_URL = 'http://192.168.29.246:3000/index.html?serverWindowId=9e9ad7b5-e973-425b-9b1d-d8a2b74cde18';
 
         // --- DOM Elements ---
         const authModal = document.getElementById('authModal');
@@ -1080,26 +1054,8 @@
                 window.location.href = 'admin.html';
                 return;
             }
-            if (role === 'saathi' && username === 'saathi' && password === 'saathi123') {
-                localStorage.setItem('sehatSaharaUser', JSON.stringify({patientId: 'saathi', username: 'Saathi User', email: 'saathi@example.com', role: 'saathi'}));
-                window.location.href = 'saathi.html';
-                return;
-            }
-            if (role === 'store' && (username === 'PHARM001' || username === 'apollo.pharmacy@pharm.com') && password === 'password123') {
-                localStorage.setItem('sehatSaharaUser', JSON.stringify({patientId: 'PHARM001', username: 'Apollo Pharmacy', email: 'apollo.pharmacy@pharm.com', role: 'store'}));
-                window.location.href = 'store.html?loggedin=true';
-                return;
-            }
-            if (role === 'store' && (username === 'PHARM002' || username === 'frankross.pharmacy@pharm.com') && password === 'password123') {
-                localStorage.setItem('sehatSaharaUser', JSON.stringify({patientId: 'PHARM002', username: 'Frank Ross', email: 'frankross.pharmacy@pharm.com', role: 'store'}));
-                window.location.href = 'store.html?loggedin=true';
-                return;
-            }
-            if (role === 'store' && (username === 'PHARM003' || username === 'wellnessforever.pharmacy@pharm.com') && password === 'password123') {
-                localStorage.setItem('sehatSaharaUser', JSON.stringify({patientId: 'PHARM003', username: 'Wellness Forever', email: 'wellnessforever.pharmacy@pharm.com', role: 'store'}));
-                window.location.href = 'store.html?loggedin=true';
-                return;
-            }
+            
+            
 
             try {
                 const response = await fetch(`${API_BASE_URL}/login`, {
@@ -1124,7 +1080,7 @@
                         case 'doctor':
                             window.location.href = 'doctor.html';
                             break;
-                        case 'store':
+                        case 'pharmacy':
                             window.location.href = 'store.html';
                             break;
                         case 'saathi':

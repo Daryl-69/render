@@ -2,48 +2,68 @@
 # Modified to use API key-based service (like Groq) instead of local Ollama
 # Provides seamless integration with external API while maintaining same interface
 
+# In api_ollama_integration.py
 import json
 import logging
 import requests
 import os
+import time # Import the time module
 from typing import Dict, Any, List, Optional
-
+import re 
 class ApiClient:
-    """Enhanced client for interacting with API-based LLM service (e.g., Groq)"""
+    """Enhanced client for interacting with API-based LLM service with rotating API keys."""
     
-    def __init__(self, api_key: str = None, base_url: str = "https://api.groq.com/openai/v1", model: str = "llama-3.1-8b-instant"):
-        self.api_key = api_key or os.getenv('GROQ_API_KEY') or os.getenv('API_KEY')
+    def __init__(self, api_keys: List[str] = None, base_url: str = "https://api.groq.com/openai/v1", model: str = "llama-3.1-8b-instant"):
+        # --- MODIFICATION START ---
+        self.api_keys = api_keys or [key.strip() for key in os.getenv('GROQ_API_KEYS', '').split(',') if key.strip()]
         self.base_url = base_url
         self.model = model
         self.logger = logging.getLogger(__name__)
+        
+        self.current_key_index = 0
+        self.last_switch_time = 0
+        # --- MODIFICATION END ---
+        
         self.is_available = self.check_availability()
         
+    @property
+    def api_key(self):
+        """Returns the currently active API key."""
+        if not self.api_keys:
+            return None
+        return self.api_keys[self.current_key_index]
+
+    def switch_key(self):
+        """Rotates to the next API key in the list."""
+        # Add a cooldown to prevent rapid switching if all keys are failing
+        if time.time() - self.last_switch_time < 10: # 10-second cooldown
+            self.logger.warning("Key switch attempted too quickly. Waiting.")
+            time.sleep(10)
+
+        if len(self.api_keys) > 1:
+            old_key_preview = f"...{self.api_key[-4:]}" if self.api_key else "None"
+            self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+            new_key_preview = f"...{self.api_key[-4:]}" if self.api_key else "None"
+            self.logger.warning(f"Switching API key from {old_key_preview} to {new_key_preview}")
+            self.last_switch_time = time.time()
+            return True
+        self.logger.warning("No alternative API keys available to switch to.")
+        return False
+
     def check_availability(self) -> bool:
-        """Check if API service is available and API key is valid"""
-        if not self.api_key:
-            self.logger.warning("No API key provided. Set GROQ_API_KEY or API_KEY environment variable")
+        """Check if any API key is valid."""
+        if not self.api_keys:
+            self.logger.warning("No API keys provided. Set GROQ_API_KEYS environment variable.")
             return False
-            
+        
+        # Test with the current key
+        if not self.api_key:
+            return False
+
         try:
-            # Test API connectivity with a simple request
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            # Make a simple test request
-            test_payload = {
-                "model": self.model,
-                "messages": [{"role": "user", "content": "Hi"}],
-                "max_tokens": 10
-            }
-            
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=test_payload,
-                timeout=10
-            )
+            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+            test_payload = {"model": self.model, "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 10}
+            response = requests.post(f"{self.base_url}/chat/completions", headers=headers, json=test_payload, timeout=10)
             
             if response.status_code == 200:
                 self.logger.info(f"API service available with model {self.model}")
@@ -55,117 +75,58 @@ class ApiClient:
         except requests.exceptions.RequestException as e:
             self.logger.warning(f"API service not available: {e}")
             return False
-        except Exception as e:
-            self.logger.error(f"Error checking API availability: {e}")
-            return False
     
-    def generate_response(self, prompt: str, system_prompt: str = "", max_tokens: int = 500, temperature: float = 0.7) -> Optional[str]:
-        """Generate completion using API with enhanced error handling"""
+    def _make_request(self, payload: Dict[str, Any], retries: int = 1) -> Optional[str]:
+        """Internal method to make requests, with key rotation on rate limit errors."""
         if not self.is_available:
             return None
-            
+
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        
         try:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": prompt})
-            
-            payload = {
-                "model": self.model,
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "top_p": 0.9,
-                "stream": False
-            }
-            
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=90
-            )
-            
+            response = requests.post(f"{self.base_url}/chat/completions", headers=headers, json=payload, timeout=90)
+
+            # --- RATE LIMIT HANDLING ---
+            if response.status_code == 429: # Too Many Requests
+                self.logger.warning(f"Rate limit exceeded for key ...{self.api_key[-4:]}. Attempting to switch key.")
+                if self.switch_key() and retries > 0:
+                    self.logger.info("Retrying request with new key...")
+                    return self._make_request(payload, retries=retries - 1)
+                else:
+                    self.logger.error("All API keys are rate-limited or no other keys available.")
+                    return None
+
             if response.status_code == 200:
                 result = response.json()
                 generated_text = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                
-                if generated_text:
-                    self.logger.debug(f"Generated response: {len(generated_text)} chars")
-                    return generated_text
-                else:
-                    self.logger.warning("API returned empty response")
-                    return None
+                return generated_text or None
             else:
                 self.logger.error(f"API error: {response.status_code} - {response.text}")
                 return None
-                
-        except requests.exceptions.Timeout:
-            self.logger.warning("API request timed out")
-            return None
+
         except requests.exceptions.RequestException as e:
             self.logger.error(f"API request failed: {e}")
             return None
         except Exception as e:
             self.logger.error(f"Unexpected error in API generation: {e}")
             return None
-    
+
+    def generate_response(self, prompt: str, system_prompt: str = "", max_tokens: int = 500, temperature: float = 0.7) -> Optional[str]:
+        """Generate completion using API with key rotation."""
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        payload = {"model": self.model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
+        return self._make_request(payload)
+
     def chat_completion(self, messages: List[Dict[str, str]], max_tokens: int = 500, temperature: float = 0.7) -> Optional[str]:
-        """Generate chat completion using API with conversation context"""
-        if not self.is_available:
-            return None
-            
-        try:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            payload = {
-                "model": self.model,
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "top_p": 0.9,
-                "stream": False
-            }
-            
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=90
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                generated_text = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                
-                if generated_text:
-                    self.logger.debug(f"Generated chat response: {len(generated_text)} chars")
-                    return generated_text
-                else:
-                    self.logger.warning("API returned empty chat response")
-                    return None
-            else:
-                self.logger.error(f"API chat error: {response.status_code} - {response.text}")
-                return None
-                
-        except requests.exceptions.Timeout:
-            self.logger.warning("API chat request timed out")
-            return None
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"API chat request failed: {e}")
-            return None
-        except Exception as e:
-            self.logger.error(f"Unexpected error in API chat: {e}")
-            return None
-    
+        """Generate chat completion with key rotation."""
+        payload = {"model": self.model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
+        return self._make_request(payload)
+
+    # test_connection method remains the same
     def test_connection(self) -> Dict[str, Any]:
         """Test the API connection and return status"""
         test_result = {
@@ -200,7 +161,7 @@ class ApiClient:
 
 class GroqScoutClient:
     """Client for openrouter's Llama 4 Scout (used for emoji/image interpretation)."""
-    def __init__(self, api_key: str = None, base_url: str = "https://openrouter.ai/api/v1", model: str = "qwen/qwen2.5-vl-72b-instruct:free"):
+    def __init__(self, api_key: str = None, base_url: str = "https://openrouter.ai/api/v1", model: str = "qwen/qwen2.5-vl-32b-instruct:free"):
         # Separate API key to allow different security policy if desired
         self.api_key = api_key or os.getenv('GROQ_SCOUT_API_KEY') or os.getenv('GROQ_API_KEY') or os.getenv('API_KEY')
         self.base_url = base_url
@@ -275,163 +236,76 @@ class GroqScoutClient:
     def interpret_image(self, user_message: str, image_b64: str, language: str = "en", context_history: List[Dict[str,str]] = None) -> Optional[str]:
         return self.interpret_medicine_image(user_message, image_b64, language, context_history)
 
+    # In api_ollama_integration.py, inside the GroqScoutClient class
+
     def interpret_prescription_image(self, image_b64: str, language: str = "en") -> Optional[Dict[str, Any]]:
         """Interpret prescription image and extract structured data"""
+    # A more forceful prompt to get JSON
         system_prompt = (
-            "You are a prescription analysis AI. Analyze the prescription image and extract the following information in JSON format:\n"
-            '{"doctor_name": "Doctor\'s full name", "medications": [{"name": "Medicine name", "dosage": "dosage instructions", "time": "when to take"}], "tests": ["test names"], "diagnosis": "illness/diagnosis if mentioned"}'
-            "\nIf information is not visible, use empty strings or arrays. Return only valid JSON."
-        )
+            "You are a prescription analysis AI. Your ONLY job is to analyze the image and respond with a single, valid JSON object. "
+            "Do not add any text, explanation, or markdown before or after the JSON. Your entire output must be the JSON itself."
+            'The JSON format MUST be: {"doctor_name": "...", "medications": [{"name": "...", "dosage": "...", "time": "..."}], "tests": ["..."], "diagnosis": "..."}'
+            "\nIf any information is unreadable, use empty strings or empty arrays for the corresponding fields."
+            )
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": [
-                {"type": "text", "text": "Please analyze this prescription image and extract the information."},
+                {"type": "text", "text": "Analyze this prescription and return only the JSON."},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
             ]}
         ]
         payload = {"model": self.model, "messages": messages, "max_tokens": 500, "temperature": 0.1}
         result = self._post("/chat/completions", payload, timeout=120)
-        if result:
-            content = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-            try:
-                return json.loads(content)
-            except json.JSONDecodeError:
-                return None
-        return None
+        if not result:
+            self.logger.warning("AI did not return any result for prescription analysis.")
+            return None
+
+        content = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+
+    # --- FIX: ADD ROBUST JSON EXTRACTION ---
+        json_match = re.search(r'\{.*\}', content, re.DOTALL)
+        if not json_match:
+            self.logger.warning(f"No JSON object found in AI response. Response was: {content}")
+            return None
+    
+        json_str = json_match.group(0)
+        try:
+        # Successfully extracted and parsed the JSON
+            parsed_json = json.loads(json_str)
+            self.logger.info("Successfully parsed JSON from prescription image analysis.")
+            return parsed_json
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to decode extracted JSON from AI response. String was: {json_str}. Error: {e}")
+            return None
+    # --- END OF FIX ---
 
 class SehatSaharaApiClient:
     """Enhanced mental health specific client using API service"""
-    
+
     def __init__(self, model: str = "llama-3.1-8b-instant", api_key: str = None, base_url: str = "https://api.groq.com/openai/v1"):
-        self.client = ApiClient(api_key=api_key, base_url=base_url, model=model)
+        # --- THIS IS THE FIX ---
+        # Pass the api_key as a list to the 'api_keys' argument
+        self.client = ApiClient(api_keys=[api_key] if api_key else None, base_url=base_url, model=model)
         self.is_available = self.client.is_available
         self.logger = logging.getLogger(__name__)
 
-        self.base_system_prompt = """You are 'Sehat Sahara', a friendly and empathetic AI health assistant for rural patients in Punjab. Your communication must be simple, clear, and available in Punjabi (pa), Hindi (hi), and English (en).
+        
+# In api_ollama_integration.py
 
-Primary Role:
-- You are a navigator for the Sehat Sahara mobile app, not a doctor.
-- You help users book appointments, find pharmacies/medicines, scan medicine labels, check prescriptions, view health records, assess symptoms and suggest possible common causes (like viral infections, allergies, or digestive issues) with basic first aid tips and precautions, always with strong disclaimers that this is not medical diagnosis, and get emergency help.
+        # In api_ollama_integration.py
 
-**GUIDANCE-FIRST PRINCIPLE:** When a user asks HOW to do something (e.g., "how to book appointment" or "how do I scan medicine"), your response MUST contain both the step-by-step guidance text AND the relevant contextual button in the SAME JSON response. The text should be formatted with markdown newlines (`\n`) for readability. This ensures the user reads the guide *before* they are redirected.
+        self.base_system_prompt = """You are 'Sehat Sahara', an AI health app navigator. Your only job is to respond with a single, valid JSON object based on the context I provide. Do not add any text before or after the JSON.
 
-**Example for "how to book appointment":**
-{
-    "response": "📅 **Opening appointment booking...**\n\n**Here is the step-by-step process:**\n1. 🔍 Select a doctor category...\n2. 👨‍⚕️ Choose your preferred doctor...\n3. 🗓️ Pick a date and time...\n4. ✅ Confirm your booking.\n\n*You can start now by clicking the button below.*",
-    "action": "CONTINUE_CONVERSATION",
-    "interactive_buttons": [
-        {
-            "type": "appointment_booking",
-            "text": "📅 Book Appointment",
-            "action": "NAVIGATE_TO_APPOINTMENT_BOOKING",
-            "style": "primary"
-        }
-    ]
-}
+**MANDATORY OUTPUT FORMAT:**
+Your entire response MUST be a single JSON object with these keys: "response", "action", "parameters", "interactive_buttons".
 
-**LANGUAGE STABILITY:** You MUST respond only in the language specified by the context's language parameter. Do not switch languages mid-conversation unless the user does. Maintain consistent language throughout the entire response.
-
-**LANGUAGE MEMORY:** The `language` parameter in the context reflects the user's preferred or last-used language. This is the single source of truth. Even if the user types a single word in a different language (e.g., "dard"), you must continue the conversation in the language specified by the context unless they switch completely for multiple messages.
-
-CRITICAL CONVERSATIONAL RULES:
-1. NATURAL CONVERSATION: If a user reports a symptom, you MUST ask a follow-up question (e.g., "How long have you felt this way?" or "Is the pain constant or does it come and go?") BEFORE suggesting home remedies and a doctor. Never jump straight to recommendations.
-
-2. CONTEXTUAL BUTTONS: The interactive_buttons array should be EMPTY by default. Only include buttons when suggesting a clear next action (e.g., "Book Appointment" after symptom assessment). For simple greetings like "hello", there must be NO buttons.
-
-3. GREETING HANDLING: For greetings (hello, hi, namaste, etc.), provide a warm, friendly welcome that introduces your capabilities WITHOUT any buttons. Example: "Hello! I'm Sehat Sahara, your health assistant. I can help you book doctor appointments, find medicines, check your health records, and answer health questions. How can I help you today?"
-
-4. HOME REMEDIES & DISCLAIMER: You may suggest general, safe home remedies (e.g., "rest and stay hydrated", "gargle with warm salt water"). EVERY such suggestion MUST end with: "Please remember, this is not medical advice. For proper treatment, it is important to consult with a doctor."
-
-5. PROACTIVE FOLLOW-UP: If you receive user progress data with feedback_pending: true, your ABSOLUTE FIRST PRIORITY is to ask: "I see you had a recent appointment. How are you feeling now?"
-
-6. CONVERSATIONAL REMINDER SETUP: If the user intent is set_medicine_reminder, start a multi-step conversation by asking the first question (e.g., "Of course. What is the name of the medicine?"). The action should be START_REMINDER_SETUP.
-
-7. SYMPTOM ASSESSMENT FOR INDIAN VILLAGES: When assessing symptoms, consider common diseases in rural India:
-    - Malaria: fever with chills, sweating, headache, body ache
-    - Dengue: high fever, severe joint/muscle pain, rash, bleeding
-    - Typhoid: prolonged fever, weakness, stomach pain, headache
-    - Cholera: severe watery diarrhea, vomiting, dehydration
-    - Tuberculosis: persistent cough (>2 weeks), weight loss, night sweats, blood in sputum
-    - Jaundice/Hepatitis: yellow skin/eyes, dark urine, fatigue
-    - Gastroenteritis: diarrhea, vomiting, stomach cramps
-    - Leptospirosis: fever, muscle pain, red eyes, jaundice
-
-    For each, provide disease-specific first aid:
-    - Malaria/Dengue: Use mosquito nets, stay hydrated, rest, seek immediate medical care
-    - Waterborne diseases (Cholera, Typhoid): Drink clean/boiled water, ORS for dehydration, hygiene
-    - TB/Jaundice: Rest, nutritious food, avoid alcohol, immediate doctor consultation
-    - Always add: "This is not a diagnosis. Please see a doctor for proper medical examination and treatment."
-
-8. **HANDLE CLARIFICATION:** If the user indicates confusion (e.g., "kya mtlb", "what do you mean", "I don't understand", "what is [word]?"), your next response MUST be an attempt to rephrase your previous statement. Use simpler synonyms and, if you used a specific term, define it. Do not just repeat the confusing sentence.
-
-    Example:
-    - Bot: "Do you have hissa like gilas, dard..."
-    - User: "what is gilas"
-    - Good Bot Response: "My apologies for the confusion. I used an incorrect word. I meant to ask if you are feeling any shivering or chills along with the pain?"
-
-Output Format Rule (MANDATORY):
-- ALWAYS respond with a single JSON object (no extra text).
-- The JSON must include:
-  - "response": short message to display to the user (in the user's language)
-  - "action": one app command
-  - "parameters": an object (can be empty) with structured arguments
-  - "interactive_buttons": array of button objects for UI (optional, usually empty)
-
-Example:
-{"response": "Thik hai, main doctor naal tuhadi appointment book karan vich madad karangi.", "action": "NAVIGATE_TO_APPOINTMENT_BOOKING", "parameters": {}, "interactive_buttons": [{"type": "appointment_booking", "text": "Book Appointment", "action": "NAVIGATE_TO_APPOINTMENT_BOOKING", "style": "primary"}]}
-
-Supported Actions:
-- NAVIGATE_TO_APPOINTMENT_BOOKING
-- FETCH_APPOINTMENTS
-- INITIATE_APPOINTMENT_CANCELLATION
-- FETCH_HEALTH_RECORD
-- START_SYMPTOM_CHECKER
-- NAVIGATE_TO_PHARMACY_SEARCH
-- FETCH_PRESCRIPTION_DETAILS
-- START_MEDICINE_SCANNER
-- TRIGGER_SOS
-- NAVIGATE_TO_REPORT_ISSUE
-- SHOW_APP_FEATURES
-- CONNECT_TO_SUPPORT_AGENT
-- CONTINUE_FOLLOWUP
-- SHOW_PRESCRIPTION_SUMMARY
-- START_REMINDER_SETUP
-- NAVIGATE_TO_APPOINTMENT_BOOKING
-
-Critical Safety Rules:
-1) NEVER provide medical advice, diagnosis, or prescribe medicines. If asked, guide to book a doctor:
-   {"response": "<localized safety message>", "action": "NAVIGATE_TO_APPOINTMENT_BOOKING", "parameters": {"reason": "medical_advice_needed"}}
-2) EMERGENCY handling (chest pain, severe bleeding, unconsciousness, stroke signs, trouble breathing):
-   - Use action TRIGGER_SOS and show ambulance number 108:
-   {"response": "<localized emergency message>", "action": "TRIGGER_SOS", "parameters": {"emergency_number": "108", "type": "medical_emergency"}}
-3) Be clear that you are an app assistant, not a doctor.
-4) Keep messages short, friendly, and actionable. Avoid technical jargon.
-
-Language:
-- Mirror the user's detected language when available: pa, hi, or en.
-- If unknown, prefer 'hi' unless clearly English or Punjabi.
-- Do not mix scripts or provide side-by-side translations.
-- Maintain consistent language throughout the entire response.
-
-Enhanced Features:
-- Interactive Buttons: Include interactive_buttons array for contextual UI buttons (usually empty)
-- Progress Tracking: Remember appointment status and follow up appropriately
-- Post-Appointment Care: Ask about appointment experience and provide follow-up guidance
-- Prescription Management: Help users understand their prescriptions with summaries
-- Feature Guidance: Provide step-by-step instructions for app features
-
-Task Hints:
-- Appointment booking: ask specialty if needed; action NAVIGATE_TO_APPOINTMENT_BOOKING.
-- Health records: action FETCH_HEALTH_RECORD with parameters like {"record_type": "all" | "labs" | "prescriptions"}.
-- Symptom checking: Ask follow-up questions about symptoms (duration, severity, location, other symptoms). For Indian villages, consider common diseases listed above. Provide disease-specific first aid. ALWAYS add: "This is not medical advice. Please see a doctor for proper diagnosis."
-- Medicine/pharmacy search: action NAVIGATE_TO_PHARMACY_SEARCH.
-- Medicine scanning: action START_MEDICINE_SCANNER.
-- Prescriptions: action FETCH_PRESCRIPTION_DETAILS.
-- Post-appointment follow-up: Use CONTINUE_FOLLOWUP action and ask about appointment experience.
-- Prescription summaries: Use SHOW_PRESCRIPTION_SUMMARY action to help users understand medications.
-- General help: action SHOW_APP_FEATURES.
-
-Remember: Output must be valid JSON only, no explanations or markdown.
+**CRITICAL RULES:**
+1.  **JSON ONLY:** Your output MUST be a valid JSON object. No other text is permitted.
+2.  **FOLLOW CONTEXT:** The user's message will often contain a `CONTEXT:` instruction. Your `response` and `interactive_buttons` MUST directly reflect that instruction.
+3.  **ONGOING CONVERSATION:** If the user provides a short answer (e.g., "dull ache"), use the conversation history to understand the context. Acknowledge their answer (e.g., "Okay, a dull ache.") and ask the next logical follow-up question. Your action MUST be 'CONTINUE_CONVERSATION' and interactive_buttons MUST be [].
+4.  **GUIDANCE & BUTTONS:** For "how to scan medicine" or "how to upload prescription", respond with a simple guidance message and provide the appropriate single button in the `interactive_buttons` array.
+5.  **BOOKING FLOW:** For appointment booking, the `CONTEXT` will provide the exact buttons to show. Your job is to create a natural-sounding `response` that asks the user to select one of those buttons.
+6.  **FINALIZE BOOKING:** When you see the action `FINALIZE_BOOKING` in the context, your response's action MUST also be `FINALIZE_BOOKING`.
 """
 
     def generate_response(self, user_message: str, context_history: List[Dict[str, str]] = None, language: str = "en") -> Optional[Dict[str, Any]]:
@@ -536,81 +410,143 @@ Sehat Sahara: [Your response here]"""
             }
         }
 
+
+
     def generate_sehatsahara_response(
         self,
         user_message: str,
         context: Dict[str, Any] = None
     ) -> Optional[str]:
+        """
+        Generates a response from the AI. Returns a valid JSON string on success
+        or None on any failure.
+        """
         if not self.is_available:
             return None
 
         try:
-            # Extract values from context dictionary with defaults
             context = context or {}
-            user_intent = context.get('user_intent', 'general_inquiry')
-            conversation_stage = context.get('conversation_stage', 'understanding')
-            severity_score = context.get('severity_score', 0.5)
-            emotional_state = context.get('emotional_state', 'neutral')
-            urgency_level = context.get('urgency_level', 'low')
             language = context.get('language', 'hi')
-            context_history = context.get('context_history', [])
-            custom_prompt = context.get('custom_prompt')
 
             system_prompt = self.build_system_prompt(
-                intent=user_intent,
-                stage=conversation_stage,
-                severity=severity_score,
-                emotional_state=emotional_state,
-                urgency_level=urgency_level,
+                intent=context.get('user_intent', 'general_inquiry'),
+                stage=context.get('conversation_stage', 'understanding'),
+                severity=0.5,
+                emotional_state='neutral',
+                urgency_level=context.get('urgency_level', 'low'),
                 language=language,
             )
-
-            # Add custom prompt context if provided
-            if custom_prompt:
-                system_prompt = f"{system_prompt}\n\n{custom_prompt}"
 
             messages = self.build_conversation_messages(
                 system_prompt=system_prompt,
                 user_message=user_message,
-                context_history=context_history,
+                context_history=context.get('context_history', []),
             )
 
             response_text = self.client.chat_completion(messages, max_tokens=300, temperature=0.5)
 
-            # Try to parse JSON strictly
-            parsed = None
-            if response_text:
-                json_start = response_text.find("{")
-                json_end = response_text.rfind("}") + 1
-                if json_start >= 0 and json_end > json_start:
-                    json_str = response_text[json_start:json_end]
-                    try:
-                        parsed = json.loads(json_str)
-                    except json.JSONDecodeError:
-                        parsed = None
+            if not response_text:
+                self.logger.warning("AI client returned an empty response.")
+                return None
 
-            if isinstance(parsed, dict) and "response" in parsed and "action" in parsed:
-                # Return compact JSON string
-                return json.dumps(parsed, ensure_ascii=False)
+            # Enhanced JSON extraction and validation
+            json_str = self._extract_and_validate_json(response_text)
 
-            # Fallback: infer intent and map to action JSON
-            intent_result = self.analyze_user_intent(user_message) or {}
-            fallback = {
-                "response": "I'm here to help with your health needs.",
-                "action": "SHOW_APP_FEATURES",
-                "parameters": {}
-            }
-            return json.dumps(fallback, ensure_ascii=False)
+            if not json_str:
+                self.logger.warning(f"AI response did not contain valid JSON after multiple attempts. Response: {response_text}")
+                return None
+
+            # Validate that it's proper JSON and has the required keys
+            try:
+                parsed = json.loads(json_str)
+                if "response" in parsed and "action" in parsed:
+                    # Ensure interactive_buttons is always an array
+                    if "interactive_buttons" not in parsed:
+                        parsed["interactive_buttons"] = []
+
+                    # Return the clean, valid JSON string
+                    return json.dumps(parsed, ensure_ascii=False)
+                else:
+                    self.logger.warning(f"AI JSON response was missing required keys 'response' or 'action'.")
+                    return None
+            except json.JSONDecodeError as e:
+                self.logger.warning(f"Failed to decode JSON from AI response: {json_str}. Error: {e}")
+                return None
 
         except Exception as e:
-            self.logger.error(f"Error in Sehat Sahara response generation: {e}")
-            # Last-resort fallback
-            fallback = {
-                "response": "I'm here to help with your health needs.",
-                "action": "SHOW_APP_FEATURES",
-                "parameters": {}
-            }
-            return json.dumps(fallback, ensure_ascii=False)
+            self.logger.error(f"Error in Sehat Sahara response generation: {e}", exc_info=True)
+            return None # Return None on any exception
+
+    def _extract_and_validate_json(self, response_text: str) -> Optional[str]:
+        """
+        Enhanced JSON extraction with multiple fallback strategies.
+        """
+        if not response_text:
+            return None
+
+        # Strategy 1: Direct JSON parsing
+        try:
+            parsed = json.loads(response_text.strip())
+            if isinstance(parsed, dict) and "response" in parsed and "action" in parsed:
+                return json.dumps(parsed, ensure_ascii=False)
+        except json.JSONDecodeError:
+            pass
+
+        # Strategy 2: Extract JSON from markdown code blocks
+        json_patterns = [
+            r'\`\`\`json\s*(\{.*?\})\s*\`\`\`',  # \`\`\`json {...}\`\`\`
+            r'\`\`\`\s*(\{.*?\})\s*\`\`\`',      # \`\`\` {...}\`\`\`
+            r'`(\{.*?\})`',                # `{...}`
+        ]
+
+        for pattern in json_patterns:
+            matches = re.findall(pattern, response_text, re.DOTALL)
+            for match in matches:
+                try:
+                    parsed = json.loads(match.strip())
+                    if isinstance(parsed, dict) and "response" in parsed and "action" in parsed:
+                        return json.dumps(parsed, ensure_ascii=False)
+                except json.JSONDecodeError:
+                    continue
+
+        # Strategy 3: Find first complete JSON object
+        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(0)
+            try:
+                parsed = json.loads(json_str)
+                if isinstance(parsed, dict) and "response" in parsed and "action" in parsed:
+                    return json.dumps(parsed, ensure_ascii=False)
+            except json.JSONDecodeError:
+                pass
+
+        # Strategy 4: Try to fix common JSON issues
+        cleaned_text = response_text.strip()
+
+        # Remove common prefixes
+        prefixes_to_remove = [
+            "Here's the JSON response:",
+            "Response:",
+            "Assistant:",
+            "AI:",
+            "JSON:",
+        ]
+
+        for prefix in prefixes_to_remove:
+            if cleaned_text.startswith(prefix):
+                cleaned_text = cleaned_text[len(prefix):].strip()
+
+        # Try to fix trailing commas
+        cleaned_text = re.sub(r',(\s*[}\]])', r'\1', cleaned_text)
+
+        try:
+            parsed = json.loads(cleaned_text)
+            if isinstance(parsed, dict) and "response" in parsed and "action" in parsed:
+                return json.dumps(parsed, ensure_ascii=False)
+        except json.JSONDecodeError:
+            pass
+
+        return None
 
     def build_system_prompt(self, intent: str, stage: str, severity: float, emotional_state: str, urgency_level: str, language: str) -> str:
         intent_guidance = {
@@ -618,7 +554,13 @@ Sehat Sahara: [Your response here]"""
             "appointment_view": "Help the user see upcoming appointments. Provide clear information.",
             "appointment_cancel": "Help initiate cancellation flow. Be understanding and helpful.",
             "health_record_request": "Help the user access health records; choose appropriate record_type parameter.",
-            "symptom_triage": "Perform symptom assessment for common Indian village diseases: malaria, dengue, typhoid, cholera, tuberculosis, jaundice, gastroenteritis, leptospirosis. Ask about duration, severity, additional symptoms. Provide disease-specific first aid: malaria/dengue - mosquito nets, hydration; typhoid/cholera - clean water, ORS; TB/jaundice - rest, nutrition. ALWAYS include: 'This is not a diagnosis. Please consult a doctor for proper medical advice.' Guide to book appointment if symptoms persist or worsen.",
+            "symptom_triage": (
+                "Perform a conversational symptom check. Ask clarifying questions one by one based on the conversation history. "
+                "If the user's reply is unclear or very short (like 'and?'), don't reset the conversation. Instead, politely ask them to elaborate on their last point or ask the previous question again in a different way. "
+                "For example, say 'I'm sorry, I didn't quite understand. Could you tell me more about the pain?' "
+                "After 3-4 questions, provide a safe home remedy and a strong disclaimer that this is not medical advice and they should see a doctor. "
+                "ALWAYS end by guiding them to book an appointment."
+            ),
             "find_medicine": "Guide to pharmacy search; never prescribe. Be helpful and clear.",
             "prescription_inquiry": "Fetch prescription details; explain simply in user's language.",
             "medicine_scan": "Start medicine scanner; add safety disclaimers.",
@@ -626,7 +568,11 @@ Sehat Sahara: [Your response here]"""
             "report_issue": "Guide to report/feedback flow. Be empathetic.",
             "post_appointment_followup": "Ask about appointment experience and how they're feeling. Provide appropriate follow-up guidance based on their response.",
             "prescription_summary_request": "Provide clear summary of user's prescription and medications. Explain doctor's instructions in simple terms.",
+            "prescription_upload": "Help user upload prescription image. Guide them to use camera to capture prescription.",
             "general_inquiry": "Briefly introduce capabilities and show features. Be friendly and welcoming.",
+            "how_to_appointment_booking": "Provide step-by-step guidance for booking appointments, then show the booking button. Use green styled message for guidance.",
+            "how_to_medicine_scan": "Provide step-by-step guidance for scanning medicine, then show the scan button. Use green styled message for guidance.",
+            "how_to_prescription_upload": "Provide step-by-step guidance for uploading prescriptions, then show the upload button. Use green styled message for guidance.",
             "out_of_scope": "Politely redirect to health-related topics or offer to connect to human support.",
             "set_medicine_reminder": "Start a multi-step conversation to set a medicine reminder. Ask questions one at a time."
         }
@@ -650,7 +596,7 @@ GUIDANCE: {intent_guidance.get(intent, "Provide general navigation help for the 
 Analyze the user's message for the Sehat Sahara health app and return ONLY a JSON object with:
 
 {{
-  "primary_intent": "one of: appointment_booking, appointment_view, appointment_cancel, health_record_request, symptom_triage, find_medicine, prescription_inquiry, medicine_scan, emergency_assistance, report_issue, post_appointment_followup, prescription_summary_request, general_inquiry, out_of_scope, set_medicine_reminder",
+  "primary_intent": "one of: appointment_booking, appointment_view, appointment_cancel, health_record_request, symptom_triage, find_medicine, prescription_inquiry, prescription_upload, medicine_scan, emergency_assistance, report_issue, post_appointment_followup, prescription_summary_request, general_inquiry, out_of_scope, set_medicine_reminder",
   "language_detected": "pa | hi | en",
   "urgency_level": "low | medium | high | emergency",
   "confidence": 0.0 to 1.0,

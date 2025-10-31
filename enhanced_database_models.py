@@ -21,7 +21,8 @@ class User(db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False, index=True)
     phone_number = db.Column(db.String(15), nullable=True)
     # Change it to this to enforce uniqueness and make it required:
-    full_name = db.Column(db.String(100), unique=True, nullable=False)
+    # To this (remove unique=True):
+    full_name = db.Column(db.String(100), nullable=False)
     password_hash = db.Column(db.String(256), nullable=False)
     role = db.Column(db.String(50), nullable=False, default='patient')
     
@@ -50,6 +51,9 @@ class User(db.Model):
     # Enhanced fields
     timezone = db.Column(db.String(50), default='Asia/Kolkata')
     notification_preferences = db.Column(db.Text)  # JSON object for notification settings
+
+    # Conversation state tracking
+    current_conversation_stage = db.Column(db.String(100), default='general')  # Track current conversation stage
     
     # Relationships
     conversation_turns = db.relationship('ConversationTurn', backref='user', lazy=True, cascade='all, delete-orphan')
@@ -81,6 +85,10 @@ class User(db.Model):
     def update_last_login(self):
         """Update last login timestamp"""
         self.last_login = datetime.now()
+
+    def update_conversation_stage(self, stage: str):
+        """Update current conversation stage"""
+        self.current_conversation_stage = stage
     
     def get_full_address(self):
         """Get formatted full address"""
@@ -366,8 +374,8 @@ class Pharmacy(db.Model):
     pharmacy_id = db.Column(db.String(15), unique=True, nullable=False, index=True)
     name = db.Column(db.String(200), nullable=False)
 
-    # --- ADD THIS LINE ---
-    password_hash = db.Column(db.String(256), nullable=True) # Making it nullable for now
+    # ADD THIS LINE FOR LOGIN
+    password_hash = db.Column(db.String(256), nullable=True)
 
     # Contact information
     phone_number = db.Column(db.String(15), nullable=True)
@@ -387,7 +395,7 @@ class Pharmacy(db.Model):
     owner_name = db.Column(db.String(100), nullable=True)
 
     # Operating hours (JSON format)
-    operating_hours = db.Column(db.Text)  # JSON object with weekly schedule
+    operating_hours = db.Column(db.Text)
 
     # Services offered
     home_delivery = db.Column(db.Boolean, default=False)
@@ -408,45 +416,13 @@ class Pharmacy(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
 
     def get_operating_hours(self):
-        """Get operating hours as dict"""
         if self.operating_hours:
-            try:
-                return json.loads(self.operating_hours)
-            except json.JSONDecodeError:
-                return {}
+            try: return json.loads(self.operating_hours)
+            except json.JSONDecodeError: return {}
         return {}
 
     def set_operating_hours(self, hours_dict):
-        """Set operating hours from dict"""
         self.operating_hours = json.dumps(hours_dict)
-
-    def is_open_at(self, datetime_obj):
-        """Check if pharmacy is open at given datetime"""
-        hours = self.get_operating_hours()
-        day_name = datetime_obj.strftime('%A').lower()
-
-        if day_name not in hours:
-            return False
-
-        day_hours = hours[day_name]
-        if not day_hours.get('open', False):
-            return False
-
-        time_str = datetime_obj.strftime('%H:%M')
-        open_time = day_hours.get('open_time', '09:00')
-        close_time = day_hours.get('close_time', '21:00')
-
-        return open_time <= time_str <= close_time
-
-    def get_distance_from(self, lat, lng):
-        """Calculate distance from given coordinates (simple approximation)"""
-        if not self.latitude or not self.longitude:
-            return None
-
-        # Simple distance calculation (not accurate for long distances)
-        lat_diff = abs(self.latitude - lat)
-        lng_diff = abs(self.longitude - lng)
-        return ((lat_diff ** 2) + (lng_diff ** 2)) ** 0.5
 
     # --- ADD THESE METHODS FOR PASSWORD HANDLING ---
     def set_password(self, password):
@@ -455,10 +431,14 @@ class Pharmacy(db.Model):
 
     def check_password(self, password):
         """Check password against hash"""
+        if self.password_hash is None:
+            return False
         return check_password_hash(self.password_hash, password)
 
     def __repr__(self):
         return f'<Pharmacy {self.name}>'
+
+
 
 class MedicineOrder(db.Model):
     """Medicine order model for pharmacy orders"""
@@ -790,8 +770,25 @@ def init_database(app):
         # Seed initial doctors if they don't exist
         seed_initial_doctors()
 
+        # --- ADD THESE TWO LINES ---
         # Seed initial pharmacies if they don't exist
         seed_initial_pharmacies()
+        seed_initial_saathis() # <-- ADD THIS LINE
+
+        # Set default time slots configuration if not exists
+        if not SystemConfiguration.query.filter_by(config_key='available_time_slots').first():
+            default_time_slots = [
+                {"text": "10:00 AM", "hour": 10, "minute": 0},
+                {"text": "11:30 AM", "hour": 11, "minute": 30},
+                {"text": "02:00 PM", "hour": 14, "minute": 0},
+                {"text": "04:30 PM", "hour": 16, "minute": 30}
+            ]
+            SystemConfiguration.set_config(
+                'available_time_slots',
+                default_time_slots,
+                'json',
+                'Available time slots for appointment booking'
+            )
 
         print("✅ Sehat Sahara database tables created successfully")
         print("✅ Default system configurations initialized")
@@ -956,73 +953,94 @@ def seed_initial_doctors():
             if existing_doctor.specialization != doc_data["specialization"]:
                 existing_doctor.specialization = doc_data["specialization"]
                 updated = True
-            if existing_doctor.password_hash != hashed_password:
-                existing_doctor.password_hash = hashed_password
+            if existing_doctor.password_hash != hashed_password.decode('utf-8'):
+                existing_doctor.password_hash = hashed_password.decode('utf-8')
                 updated = True
             if updated:
                 db.session.add(existing_doctor)
 
     db.session.commit()
 
+def seed_initial_saathis():
+    """Seed initial Saathi users into the database."""
+    saathis_to_add = [
+        {
+            "patient_id": "SAATHI001",
+            "full_name": "Rohan Sharma (Saathi)",
+            "email": "saathi.rohan@sehara.com",
+            "password": "password123",
+            "role": "saathi" # CRITICAL: Set the role correctly
+        }
+        # You can add more Saathi users here
+    ]
+
+    for saathi_data in saathis_to_add:
+        existing_user = User.query.filter_by(patient_id=saathi_data["patient_id"]).first()
+        if not existing_user:
+            new_saathi = User(
+                patient_id=saathi_data["patient_id"],
+                full_name=saathi_data["full_name"],
+                email=saathi_data["email"],
+                role=saathi_data["role"],
+                is_active=True
+            )
+            new_saathi.set_password(saathi_data["password"])
+            db.session.add(new_saathi)
+    
+    db.session.commit()
+
 def seed_initial_pharmacies():
     """Seed initial pharmacies into the database"""
-    from werkzeug.security import generate_password_hash
-
     pharmacies_to_add = [
         {
-            "pharmacy_id": "PHAR001",
-            "name": "Apollo Pharmacy",
-            "email": "apollo.pharmacy@pharm.com",
-            "password": "password123",
-            "phone_number": "+91 98765 43210",
-            "address": "123 Health St, Wellness Colony, Kolkata, WB 700091",
-            "estimated_delivery_time": "30-45 mins"
+            "pharmacy_id": "PHAR001", "name": "Apollo Pharmacy", "email": "apollo.pharmacy@pharm.com",
+            "password": "password123", "phone_number": "+91 98765 43210",
+            "address": "123 Health St, Wellness Colony, Kolkata, WB 700091", "estimated_delivery_time": "30-45 mins"
         },
         {
-            "pharmacy_id": "PHAR002",
-            "name": "Frank Ross",
-            "email": "frankross.pharmacy@pharm.com",
-            "password": "password123",
-            "phone_number": "+91 98765 43211",
-            "address": "456 Medical Ave, Health District, Mumbai, MH 400001",
-            "estimated_delivery_time": "45-60 mins"
+            "pharmacy_id": "PHAR002", "name": "Frank Ross", "email": "frankross.pharmacy@pharm.com",
+            "password": "password123", "phone_number": "+91 98765 43211",
+            "address": "456 Medical Ave, Health District, Mumbai, MH 400001", "estimated_delivery_time": "45-60 mins"
         },
         {
-            "pharmacy_id": "PHAR003",
-            "name": "Wellness Forever",
-            "email": "wellnessforever.pharmacy@pharm.com",
-            "password": "password123",
-            "phone_number": "+91 98765 43212",
-            "address": "789 Care Blvd, Wellness Park, Delhi, DL 110001",
-            "estimated_delivery_time": "20-35 mins"
+            "pharmacy_id": "PHAR003", "name": "Wellness Forever", "email": "wellnessforever.pharmacy@pharm.com",
+            "password": "password123", "phone_number": "+91 98765 43212",
+            "address": "789 Care Blvd, Wellness Park, Delhi, DL 110001", "estimated_delivery_time": "20-35 mins"
         }
     ]
 
     for pharm_data in pharmacies_to_add:
         existing_pharmacy = Pharmacy.query.filter_by(pharmacy_id=pharm_data["pharmacy_id"]).first()
-        hashed_password = generate_password_hash(pharm_data["password"])
         if not existing_pharmacy:
             new_pharmacy = Pharmacy(
-                pharmacy_id=pharm_data["pharmacy_id"],
-                name=pharm_data["name"],
-                email=pharm_data["email"],
-                password_hash=hashed_password,
-                phone_number=pharm_data["phone_number"],
-                address=pharm_data["address"],
-                estimated_delivery_time=pharm_data.get("estimated_delivery_time"),
-                is_active=True
+                pharmacy_id=pharm_data["pharmacy_id"], name=pharm_data["name"], email=pharm_data["email"],
+                phone_number=pharm_data["phone_number"], address=pharm_data["address"],
+                estimated_delivery_time=pharm_data.get("estimated_delivery_time"), is_active=True
             )
+            new_pharmacy.set_password(pharm_data["password"])
             db.session.add(new_pharmacy)
-        else:
-            # Update fields if they don't match
-            updated = False
-            if existing_pharmacy.name != pharm_data["name"]:
-                existing_pharmacy.name = pharm_data["name"]
-                updated = True
-            if existing_pharmacy.password_hash != hashed_password:
-                existing_pharmacy.password_hash = hashed_password
-                updated = True
-            if updated:
-                db.session.add(existing_pharmacy)
 
     db.session.commit()
+# In enhanced_database_models.py, add this new class
+
+class PushSubscription(db.Model):
+    """Stores web push subscription details for users"""
+    __tablename__ = 'push_subscriptions'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    subscription_info = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.now)
+
+    user = db.relationship('User', backref=db.backref('push_subscriptions', lazy=True, cascade='all, delete-orphan'))
+
+    def __repr__(self):
+        return f'<PushSubscription for User {self.user_id}>'
+# In enhanced_database_models.py
+
+# --- ADD THIS NEW CLASS AT THE END OF THE FILE ---
+class KeyValueStore(db.Model):
+    """A simple key-value store to save the memory JSON to the database."""
+    __tablename__ = 'key_value_store'
+    key = db.Column(db.String(100), primary_key=True)
+    value = db.Column(db.Text, nullable=False)

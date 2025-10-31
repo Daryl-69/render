@@ -319,7 +319,8 @@
 
     <script>
         // API Base URL
-        const API_BASE_URL = window.location.origin;
+        //const API_BASE_URL = window.location.origin;
+        const API_BASE_URL = 'https://sahara-sathi.onrender.com';
 
         // This is a global function that Google Maps API will call
         function initMap() {
@@ -491,13 +492,7 @@
                         <div style="display: flex; align-items: center;"><span class="alert-indicator"></span> ${item}</div>
                         <button class="btn btn-primary btn-sm" data-screen="inventoryScreen">Check Stock</button>
                     </div>`).join('');
-
-                const recentOrdersContainer = document.getElementById('recentOrdersList');
-                recentOrdersContainer.innerHTML = appData.recentOrders.map(order => `
-                    <div class="list-item">
-                        <div><strong>Order #${order.id}</strong> - ${order.customer}</div>
-                        <span class="status-badge status-${order.status.toLowerCase()}">${order.status}</span>
-                    </div>`).join('');
+                
             }
 
             function renderInventory() {
@@ -515,27 +510,11 @@
                     </div>`).join('');
             }
 
-            function renderOrders() {
-                const container = document.getElementById('ordersList');
-                 container.innerHTML = appData.orders.map(order => {
-                     let buttonHtml = `<button class="btn btn-primary btn-sm accept-order-btn" data-id="${order.id}">Accept</button>`;
-                     if (order.status !== 'New') {
-                         buttonHtml = `<button class="btn btn-sm" disabled>Accepted</button>`;
-                     }
-                     return `
-                        <div class="list-item">
-                            <div><strong>Order #${order.id}</strong> - ${order.customer}<br><small>${order.address}</small></div>
-                            <div style="display: flex; align-items: center; gap: 0.5rem;">
-                                 <span class="status-badge status-${order.status.toLowerCase()}">${order.status}</span>
-                                 ${buttonHtml}
-                            </div>
-                        </div>`;
-                 }).join('');
-            }
+            
 
             function renderPrescriptions() {
                 const container = document.getElementById('prescriptionsList');
-                 container.innerHTML = appData.prescriptions.map(p => `
+                    container.innerHTML = appData.prescriptions.map(p => `
                     <div class="list-item">
                         <div><strong>Patient: ${p.patient}</strong><br><small>From: ${p.doctor}</small></div>
                         <button class="btn btn-primary btn-sm view-prescription-btn" data-id="${p.id}">View & Process</button>
@@ -622,70 +601,97 @@
                 });
             }
 
+            // This function now handles EVERYTHING: fetching data and managing auth state
             function loadDashboardData() {
-                // Load real dashboard data from backend
-                fetch('/v1/pharmacy/dashboard', {
+                fetch(`${API_BASE_URL}/v1/pharmacy/dashboard`, {
                     method: 'GET',
-                    credentials: 'include'
+                    credentials: 'include' // This tells the browser to send the login cookie
                 })
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) {
+                        // If the response is 401 or another error, it will be caught below
+                        throw new Error(`Authentication failed: Status ${response.status}`);
+                    }
+                    return response.json();
+                })
                 .then(data => {
                     if (data.success) {
-                        // Update dashboard with real data
-                        document.querySelector('.info-card[data-screen="ordersScreen"] h3').textContent = `New Orders`;
-                        document.querySelector('.info-card[data-screen="ordersScreen"] p').textContent = data.newOrdersCount;
-                        document.querySelector('.info-card[data-screen="prescriptionsScreen"] h3').textContent = `Prescriptions`;
-                        document.querySelector('.info-card[data-screen="prescriptionsScreen"] p').textContent = data.pendingDeliveriesCount;
-                        document.querySelector('.info-card[data-screen="inventoryScreen"] h3').textContent = `Low Stock Alerts`;
-                        document.querySelector('.info-card[data-screen="inventoryScreen"] p').textContent = data.lowStockAlerts;
+                        // --- SUCCESS PATH ---
+                        // Ensure the correct buttons are showing
+                        document.getElementById('logoutBtn').style.display = 'inline-block';
+                        document.getElementById('loginBtn').style.display = 'none';
 
-                        // Update pharmacy name
+                        // Update pharmacy name in the header
                         document.querySelector('.header .logo').textContent = data.pharmacyName;
+                        
+                        // Update dashboard stats
+                        document.getElementById('newOrdersCount').textContent = data.newOrdersCount;
+                        document.getElementById('pendingDeliveriesCount').textContent = data.pendingDeliveriesCount;
+                        document.getElementById('prescriptionsCount').textContent = '5'; // Static for now
+                        document.getElementById('lowStockAlertsCount').textContent = data.lowStockAlerts || 3;
 
-                        // Update recent orders
+                        // Update recent orders list with real data
                         const recentOrdersContainer = document.getElementById('recentOrdersList');
-                        recentOrdersContainer.innerHTML = data.orders.slice(0, 3).map(order => `
-                            <div class="list-item">
-                                <div><strong>Order #${order.id}</strong> - ${order.customer}</div>
-                                <span class="status-badge status-${order.status.toLowerCase()}">${order.status}</span>
-                            </div>`).join('');
+                        if (data.orders && data.orders.length > 0) {
+                            recentOrdersContainer.innerHTML = data.orders.slice(0, 3).map(order => `
+                                <div class="list-item">
+                                    <div><strong>Order #${String(order.id).slice(-6).toUpperCase()}</strong> - ${order.customer}</div>
+                                    <span class="status-badge status-${order.status.toLowerCase()}">${order.status}</span>
+                                </div>`).join('');
+                        } else {
+                            recentOrdersContainer.innerHTML = '<p style="text-align: center; color: var(--text-color-secondary);">No new orders found.</p>';
+                        }
+
+                        // Pass the real order data to the function that renders the "Orders" screen
+                        renderOrders(data.orders); 
+                    } else {
+                        throw new Error(data.message || 'API returned success: false');
                     }
                 })
                 .catch(error => {
+                    // --- FAILURE (401) PATH ---
                     console.error('Failed to load dashboard data:', error);
+                    
+                    // Show a helpful message and display the login button
+                    document.getElementById('dashboardSubtitle').textContent = 'Please log in to view your dashboard.';
+                    document.getElementById('logoutBtn').style.display = 'none';
+                    document.getElementById('loginBtn').style.display = 'inline-block';
+                    
+                    // Render the page in an empty/logged-out state
+                    renderDashboard(); // This renders mock high-demand items
+                    renderOrders([]);   // This renders the orders list as empty
                 });
             }
 
-            async function checkAuth() {
-                try {
-                    const response = await fetch(`${API_BASE_URL}/v1/pharmacy/dashboard`);
-                    if (response.ok) {
-                        document.getElementById('logoutBtn').style.display = 'inline-block';
-                        document.getElementById('loginBtn').style.display = 'none';
-                        return true;
-                    } else {
-                        document.getElementById('logoutBtn').style.display = 'none';
-                        document.getElementById('loginBtn').style.display = 'inline-block';
-                        return false;
-                    }
-                } catch (error) {
-                    console.error('Auth check failed:', error);
-                    document.getElementById('logoutBtn').style.display = 'none';
-                    document.getElementById('loginBtn').style.display = 'inline-block';
-                    return false;
+            // **MODIFY** the renderOrders function to accept data as a parameter
+            function renderOrders(orders = appData.orders) { // Use mock data as a fallback only
+                const container = document.getElementById('ordersList');
+                if (orders.length === 0) {
+                    container.innerHTML = '<p style="text-align: center; color: var(--text-color-secondary);">There are no incoming orders at this time.</p>';
+                    return;
                 }
+                 container.innerHTML = orders.map(order => {
+                     let buttonHtml = `<button class="btn btn-primary btn-sm accept-order-btn" data-id="${order.id}">Accept</button>`;
+                     if (order.status.toLowerCase() !== 'placed') {
+                         buttonHtml = `<button class="btn btn-sm" disabled>${order.status}</button>`;
+                     }
+                     return `
+                        <div class="list-item">
+                            <div><strong>Order #${String(order.id).slice(-6).toUpperCase()}</strong>- ${order.customer}</div>
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                 <span class="status-badge status-${order.status.toLowerCase()}">${order.status}</span>
+                                 ${buttonHtml}
+                            </div>
+                        </div>`;
+                 }).join('');
             }
+
+            
 
             function initializeApp() {
                 setupNavigation();
                 setupTheme();
-                checkAuth().then(isAuthenticated => {
-                    if (isAuthenticated) {
-                        loadDashboard();
-                    } else {
-                        renderDashboard();
-                    }
-                });
+                loadDashboardData();
                 renderInventory();
                 renderOrders();
                 renderPrescriptions();
@@ -697,5 +703,7 @@
     </script>
 </body>
 </html>
+
+
 
 
