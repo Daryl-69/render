@@ -444,8 +444,8 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            // const API_BASE_URL = 'https://sahara-sathi.onrender.com/v1'; // <-- ADD THIS LINE
-            const API_BASE_URL = 'https://render-atua.onrender.com';
+            //const API_BASE_URL = 'https://sahara-sathi.onrender.com/v1';
+            const API_BASE_URL = '/api';// <-- ADD THIS LINE
             let doctor = null;
             let currentLanguage = 'en';
             let currentAppointment = null;
@@ -459,7 +459,7 @@
             // WebRTC variables
 // --- START: Agora Variables ---
 const AGORA_APP_ID = "5ce1cf67c1f142478e0f3ed61cb8958f"; // Use the SAME App ID
-let TEMP_TOKEN = "007eJxTYFhkZCBakLWg4+jmp0fLPyjYBUm/3Hgl8PnhlZ4FM7dd9ZRTYDBNTjVMTjMzTzZMMzQxMjG3SDVIM05NMTNMTrKwNLVIk7RhymwIZGRQdpJkYWSAQBCflyElNTdfNzkxJ0fX0MiYgQEAmr4hLQ=="; // Fetch or use the SAME temporary token for the channel
+
 let agoraClient = null
 let localAudioTrack = null;
 let localVideoTrack = null;
@@ -573,7 +573,7 @@ let currentChannelName = null; // Will be set based on appointmentId
 
                             try {
                                 console.log(`Sending audio for patient ${currentPatientId}...`);
-                                const response = await fetch(`${API_BASE_URL}/doctor/generate-prescription-from-speech`, {
+                                const response = await fetch(`${API_BASE_URL}/v1/doctor/generate-prescription-from-speech`, {
                                     method: 'POST',
                                     body: formData,
                                     credentials: 'include' // Crucial for authentication
@@ -660,7 +660,7 @@ let currentChannelName = null; // Will be set based on appointmentId
                 submitButton.disabled = true;
 
                 try {
-                    const response = await fetch(`${API_BASE_URL}/doctor/create-digital-prescription`, {
+                    const response = await fetch(`${API_BASE_URL}/v1/doctor/create-digital-prescription`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json'},
                         credentials: 'include',
@@ -700,26 +700,58 @@ let currentChannelName = null; // Will be set based on appointmentId
              });
         }
         // --- END OF setupAiPrescription FUNCTION ---
+        // --- END OF setupAiPrescription FUNCTION ---
+
+        // Add popstate listener for back button support
+        window.addEventListener('popstate', (event) => {
+            if (event.state && event.state.screen) {
+                showScreen(event.state.screen);
+            }
+        });
+
+        // In doctor.html, inside the <script> block
 
             
             // In doctor.html, inside the <script> block
-// In doctor.html, INSIDE the <script> block
-function showCallScreen(patientName, appointmentId) {
-    currentAppointmentId = appointmentId; // Keep this for context if needed elsewhere
-    document.getElementById('consultationHeader').textContent = `Consultation with ${patientName}`;
-    showScreen('consultationScreen');
+// In doctor.html
+function showCallScreen(patientName, appointmentId) { // <<< Use patientName here
+    currentAppointmentId = appointmentId;
+    currentChannelName = appointmentId;
+
+    const headerElement = document.getElementById('consultationHeader');
+    if (headerElement) headerElement.textContent = `Consultation with ${patientName}`; // <<< Use patientName here
+
+    showScreen('consultationScreen'); // Doctor uses showScreen
+
+    // Clear video elements and hide status
+    const localVideoPlayer = document.getElementById('localVideo');
+    const remoteVideoPlayer = document.getElementById('remoteVideo');
+    if (localVideoPlayer) localVideoPlayer.innerHTML = '';
+    if (remoteVideoPlayer) remoteVideoPlayer.innerHTML = '<p>Waiting to connect...</p>';
     hideConnectionStatus();
 
-    // --- START: Agora Initialization and Join Trigger ---
-    if (!agoraClient) {
-        initializeAgoraClient(); // Initialize if not already done
+    // Initialize Agora Client if needed (or if disconnected)
+    // Using agoraClient = null in leaveCall makes this check reliable
+    if (!agoraClient || agoraClient.connectionState === 'DISCONNECTED') {
+        console.log("Initializing Agora Client for new call...");
+        initializeAgoraClient();
+    } else {
+        console.log("Agora Client already exists, state:", agoraClient.connectionState);
+        // Even if client exists but wasn't fully cleaned up, ensure button is ready
     }
-    // Use appointmentId as the channel name for uniqueness
-    // In a real app, FETCH a secure token from your backend here using appointmentId
-    // For testing, we use the temporary token directly
-    console.log(`Attempting to join channel: ${appointmentId}`);
-    joinAndPublish(appointmentId, TEMP_TOKEN); // Pass channel name and token
-    // --- END: Agora Initialization and Join Trigger ---
+
+    // *** CRITICAL CHANGE: Ensure Start Button is ready ***
+    const startBtn = document.getElementById('startCallBtn');
+    if (startBtn) {
+        startBtn.textContent = 'Start Call'; // Set text correctly
+        startBtn.disabled = false;         // Ensure it's enabled
+    } else {
+        console.error("Start Call button not found!");
+    }
+
+    // *** REMOVED THE AUTOMATIC CALL TO joinAndPublish ***
+    // console.log(`Attempting to join channel: ${appointmentId}`); // No longer joining here
+    // joinAndPublish(appointmentId, TEMP_TOKEN); // <--- REMOVED THIS LINE
 }
 
 
@@ -796,41 +828,7 @@ function hideConnectionStatus() {
 // function toggleAudio() { ... }
 // function toggleVideo() { ... }
 
-function endCall() {
-    console.log('Doctor: Ending call...');
-    isCallActive = false; // Stop polling and prevent retries
 
-    if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-        localStream = null;
-    }
-    if (peerConnection) {
-        peerConnection.close();
-        peerConnection = null;
-    }
-     if (dataChannel) {
-        dataChannel.close();
-        dataChannel = null;
-    }
-
-    // Reset UI specific to doctor
-    showScreen('dashboardScreen'); // Go back to dashboard
-    const remoteVideo = document.getElementById('remoteVideo');
-    const localVideo = document.getElementById('localVideo');
-    if (remoteVideo) remoteVideo.srcObject = null;
-    if (localVideo) localVideo.srcObject = null;
-    const startBtn = document.getElementById('startCallBtn');
-     if(startBtn) { startBtn.disabled = false; startBtn.textContent = 'Start Call'; }
-    // Reset mute buttons if they exist
-
-    // Reset state variables
-    currentAppointmentId = null;
-    iceCandidateQueue = [];
-    isInitiator = false;
-    retryCount = 0;
-    retryDelay = 1000;
-    hideConnectionStatus();
-}
 
 // --- START: Agora Functions ---
 
@@ -962,6 +960,47 @@ try {
         leaveCall(); // Clean up on error
     }
 }
+async function fetchAgoraToken(channelName) {
+    try {
+        console.log(`Requesting Agora token for channel: ${channelName}`);
+        const response = await fetch(`${API_BASE_URL}/v1/agora/token`, { // Use your API_BASE_URL
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            // *** IMPORTANT: Tells fetch to send cookies (like your session cookie) ***
+            credentials: 'include',
+            body: JSON.stringify({
+                channelName: channelName
+                // uid: 0 // Optional: Backend defaults to 0 if not sent
+            })
+        });
+
+        if (!response.ok) {
+            // Try to get error message from backend
+            let errorMsg = `Server error: ${response.status}`;
+            try {
+                 const errorData = await response.json();
+                 errorMsg = errorData.error || errorMsg;
+            } catch(jsonError) { /* Ignore if response not JSON */ }
+            throw new Error(errorMsg);
+        }
+
+        const data = await response.json();
+
+        if (data.success && data.token) {
+            console.log("Successfully received Agora token.");
+            return data.token;
+        } else {
+            throw new Error(data.error || 'Backend failed to provide a token.');
+        }
+
+    } catch (error) {
+        console.error('Error fetching Agora token:', error);
+        showConnectionStatus(`Error getting call token: ${error.message}`, 'error'); // Show error to user
+        return null; // Indicate failure
+    }
+}
 
 // Leave Agora Channel and Clean Up
 async function leaveCall() {
@@ -991,7 +1030,7 @@ async function leaveCall() {
              console.error("Error leaving Agora channel:", error);
         }
         // Optional: Destroy the client instance if completely done
-        // agoraClient = null;
+        agoraClient = null;
     }
 
     // Reset UI
@@ -1085,7 +1124,7 @@ async function showPatientSummary(appointmentId) {
 
     // 3. Fetch live summary data from the backend
     try {
-        const response = await fetch(`${API_BASE_URL}/patient-summary/${patientId}`, { /* ... */ });
+        const response = await fetch(`${API_BASE_URL}/v1/patient-summary/${patientId}`, { /* ... */ });
         // ... (check response.ok) ...
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
@@ -1161,7 +1200,7 @@ async function showPatientSummary(appointmentId) {
             
             function checkAuth() {
                 // Fetch doctor profile from backend
-                return fetch(`${API_BASE_URL}/doctor/profile`, { // <-- MODIFY THIS LINE
+                return fetch(`${API_BASE_URL}/v1/doctor/profile`, { // <-- MODIFY THIS LINE
                     method: 'GET',
                     credentials: 'include',
                     headers: {
@@ -1211,10 +1250,12 @@ async function showPatientSummary(appointmentId) {
             function showScreen(screenId) {
                 document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
                 document.getElementById(screenId)?.classList.add('active');
-                
+
                 document.querySelectorAll('.nav-button, .top-nav a').forEach(link => {
                     link.classList.toggle('active', link.dataset.screen === screenId);
                 });
+                // Push state to history for back button support
+                history.pushState({ screen: screenId }, '', '#' + screenId);
             }
             
             function setupNavigation() {
@@ -1291,7 +1332,7 @@ async function generateAppointments() {
     let fetchError = null;
 
     try {
-        const response = await fetch(`${API_BASE_URL}/doctor/dashboard`, { credentials: 'include' });
+        const response = await fetch(`${API_BASE_URL}/v1/doctor/dashboard`, { credentials: 'include' });
         // --- Added basic error check for non-OK HTTP status ---
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
@@ -1557,7 +1598,7 @@ async function showPatientSummary(patientId, patientName) { // Changed parameter
 
     // --- Fetch live summary data from the backend ---
     try {
-        const response = await fetch(`${API_BASE_URL}/patient-summary/${patientId}`, { // Use patientId in URL
+        const response = await fetch(`${API_BASE_URL}/v1/patient-summary/${patientId}`, { // Use patientId in URL
             method: 'GET',
             credentials: 'include'
         });
@@ -1754,7 +1795,7 @@ async function showPatientSummary(patientId, patientName) { // Changed parameter
                     const imageDataUrl = reader.result; // This is the base64 string with prefix
 
                     try {
-                        const response = await fetch(`${API_BASE_URL}/doctor/upload-prescription`, { // Correct endpoint
+                        const response = await fetch(`${API_BASE_URL}/v1/doctor/upload-prescription`, { // Correct endpoint
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
@@ -1857,26 +1898,78 @@ async function showPatientSummary(patientId, patientName) { // Changed parameter
                     setupFormsAndModals();
                     setupAiPrescription();
                     // --- ADD THIS EVENT LISTENER ---
+                    // Add this listener during initialization (e.g., inside initializeApp or setupFormsAndModals)
+
+const startCallButton = document.getElementById('startCallBtn');
+if (startCallButton) {
+    startCallButton.addEventListener('click', async () => { // Make the listener async
+        if (currentChannelName) {
+            console.log(`Start Call button clicked. Attempting join for channel: ${currentChannelName}`);
+            startCallButton.textContent = 'Connecting...'; // Update text
+            startCallButton.disabled = true;
+
+            // --- Fetch the token ---
+            const token = await fetchAgoraToken(currentChannelName);
+
+            if (token) {
+                // --- Join only if token was successfully fetched ---
+                joinAndPublish(currentChannelName, token); // Use the fetched token
+            } else {
+                // Token fetch failed, reset the button
+                showConnectionStatus("Failed to get call token. Please try again.", "error");
+                startCallButton.textContent = 'Start Call';
+                startCallButton.disabled = false;
+            }
+
+        } else {
+            console.error("Cannot start call, channel name (appointmentId) is missing.");
+            showConnectionStatus("Error: Appointment ID missing.", "error");
+            startCallButton.textContent = 'Start Call'; // Reset button if context is missing
+            startCallButton.disabled = false;
+        }
+    });
+} else {
+    console.error("Could not find the Start Call button element!");
+}
                     // Inside initializeApp() or where the listener is added:
-document.getElementById('joinDemoCallBtn')?.addEventListener('click', () => {
-    // Use a consistent ID and token for the demo channel
+// Find this listener in doctor.html ONLY
+document.getElementById('joinDemoCallBtn')?.addEventListener('click', async () => { // Make async
     const demoChannelName = 'demo-call-123';
-    // Use the same TEMP_TOKEN or fetch a specific demo token if needed
-    const demoToken = TEMP_TOKEN;
 
-    // Set context for prescription forms etc. if needed for demo
+    // Set context (keep this part)
     currentAppointment = { id: demoChannelName, patientId: 'DEMO_PATIENT_ID', patient: 'Live Demo Patient' };
-    // ... (rest of the context setting code from your existing listener) ...
+    // ... (rest of the context setting code) ...
 
-    // Show the call screen which will initialize Agora and join
+    // UI Updates (keep this part)
     document.getElementById('consultationHeader').textContent = `Consultation with Live Demo Patient`;
     showScreen('consultationScreen');
     hideConnectionStatus();
+
     if (!agoraClient) {
         initializeAgoraClient();
     }
+
     console.log(`Attempting to join demo channel: ${demoChannelName}`);
-    joinAndPublish(demoChannelName, demoToken);
+
+    // --- FETCH TOKEN FOR DEMO ---
+    const startBtn = document.getElementById('startCallBtn'); // Temporarily disable main btn
+    if(startBtn) startBtn.disabled = true;
+    showConnectionStatus("Getting demo call token...", "info"); // Show status
+
+    // Fetch the token directly here
+    const token = await fetchAgoraToken(demoChannelName); // Fetch token for demo channel
+
+    if (token) {
+        // Use the fetched token directly
+        joinAndPublish(demoChannelName, token); // Join with fetched token
+        // The joinAndPublish function will update the start button state upon success/failure
+    } else {
+        showConnectionStatus("Failed to get demo call token.", "error");
+        if(startBtn) startBtn.disabled = false; // Re-enable main btn on failure
+        // Consider navigating back or showing a persistent error
+        showScreen('dashboardScreen');
+    }
+    // --- END FETCH LOGIC ---
 });
                     // --- END OF NEW LISTENER ---
 
@@ -1893,7 +1986,7 @@ document.getElementById('logoutBtn').addEventListener('click', async () => {
 
     try {
         // --- ADDED: Call the backend logout endpoint ---
-        const response = await fetch(`${API_BASE_URL}/logout`, {
+        const response = await fetch(`${API_BASE_URL}/v1/logout`, {
             method: 'POST',
             credentials: 'include', // Important: Sends the session cookie
             headers: {
