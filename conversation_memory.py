@@ -5,12 +5,10 @@ Simplified conversation tracking and user context management for health app navi
 
 import json
 import logging
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 from collections import defaultdict, deque
-import pytz
-from enhanced_database_models import User, db, KeyValueStore
 
 @dataclass
 class UserProfile:
@@ -18,7 +16,7 @@ class UserProfile:
     user_id: str
     patient_id: str = ""
     full_name: str = ""
-    preferred_language: Optional[str] = None  # hi, pa, en
+    preferred_language: str = "hi"  # hi, pa, en
     location: str = ""
 
     # Conversation tracking
@@ -92,7 +90,7 @@ class UserProfile:
             user_id=data.get('user_id', ''),
             patient_id=data.get('patient_id', ''),
             full_name=data.get('full_name', ''),
-            preferred_language=data.get('preferred_language'),
+            preferred_language=data.get('preferred_language', 'hi'),
             location=data.get('location', ''),
             conversation_history=data.get('conversation_history', []),
             current_session_id=data.get('current_session_id', ''),
@@ -173,7 +171,7 @@ class ProgressiveConversationMemory:
                 user_id=user_id,
                 patient_id=kwargs.get('patient_id', user_id), # Use user_id as fallback
                 full_name=kwargs.get('full_name', ''),
-                preferred_language=kwargs.get('preferred_language', None),
+                preferred_language=kwargs.get('preferred_language', 'hi'),
                 location=kwargs.get('location', '')
                 )
             self.logger.info(f"Created new user profile for: {user_id}")
@@ -191,13 +189,6 @@ class ProgressiveConversationMemory:
         """Add a conversation turn to user's history"""
         
         profile = self.create_or_get_user(user_id)
-        # --- FIX: Persist the first-ever detected language ---
-        # This addresses your requirement 1
-        detected_lang = nlu_result.get('language_detected')
-        if detected_lang and profile.preferred_language is None:
-            profile.preferred_language = detected_lang
-            self.logger.info(f"Persisted first detected language '{detected_lang}' for user {user_id}")
-        # --- END OF FIX ---
         
         # Create conversation turn
         turn = {
@@ -325,7 +316,7 @@ class ProgressiveConversationMemory:
         # This method should be called from within a database session context
         # Import here to avoid circular imports
         try:
-            
+            from enhanced_database_models import User, db
             user = User.query.filter_by(patient_id=user_id).first()
             if user:
                 user.update_conversation_stage(stage)
@@ -337,7 +328,7 @@ class ProgressiveConversationMemory:
     def get_conversation_stage_db(self, user_id: str) -> str:
         """Get conversation stage from database"""
         try:
-            
+            from enhanced_database_models import User
             user = User.query.filter_by(patient_id=user_id).first()
             if user:
                 return getattr(user, 'current_conversation_stage', 'general')
@@ -421,18 +412,7 @@ class ProgressiveConversationMemory:
                 'message_count': profile.message_count
             }
         }
-    def recalculate_all_next_alerts(self, user_id: str):
-        """Recalculates the next alert time for all of a user's reminders."""
-        profile = self.create_or_get_user(user_id)
-        for reminder in profile.medicine_reminders:
-            if reminder.get('reminder_enabled', True):
-                user_timezone = reminder.get("timezone", "UTC")
-                times_list = reminder.get("times", [])
-                if times_list:
-                    # Clear the sent flag and calculate the next time
-                    reminder['alert_sent'] = False
-                    reminder['next_alert_utc'] = self._calculate_next_utc_timestamp(times_list, user_timezone)
-
+    
     def get_session_context(self, session_id: str) -> Dict[str, Any]:
         """Get context for a specific session"""
         return self.session_contexts.get(session_id, {})
@@ -510,41 +490,61 @@ class ProgressiveConversationMemory:
             return False
     
     def save_to_file(self, filepath: str) -> bool:
-        """Saves conversation memory to the database."""
+        """Save conversation memory to file"""
         try:
-            json_string = json.dumps({
-                'user_profiles': {uid: profile.to_dict() for uid, profile in self.user_profiles.items()}
-                })
-            record = KeyValueStore.query.filter_by(key='conversation_memory').first()
-            if record:
-                record.value = json_string
-            else:
-                record = KeyValueStore(key='conversation_memory', value=json_string)
-                db.session.add(record)
-        
-            db.session.commit()
-            self.logger.info("Conversation memory saved to DATABASE.")
+            # Ensure all datetime objects are properly serialized
+            def serialize_datetime(obj):
+                if isinstance(obj, datetime):
+                    return obj.isoformat()
+                raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
+            data = {
+                'user_profiles': {uid: profile.to_dict() for uid, profile in self.user_profiles.items()},
+                'session_contexts': self.session_contexts,
+                'active_tasks': self.active_tasks,
+                'conversation_stats': dict(self.conversation_stats),
+                'export_timestamp': datetime.now().isoformat()
+            }
+
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False, default=serialize_datetime)
+
+            self.logger.info(f"Conversation memory saved to {filepath}")
             return True
+
         except Exception as e:
-            self.logger.error(f"Error saving conversation memory to database: {e}")
-            db.session.rollback()
+            self.logger.error(f"Error saving conversation memory: {e}")
             return False
     
     def load_from_file(self, filepath: str) -> bool:
         """Load conversation memory from file"""
         try:
-            record = KeyValueStore.query.filter_by(key='conversation_memory').first()
-            if record:
-                data = json.loads(record.value)
-                self.user_profiles = {}
-                for uid, profile_data in data.get('user_profiles', {}).items():
-                    self.user_profiles[uid] = UserProfile.from_dict(profile_data)
-                self.logger.info("Conversation memory loaded from DATABASE.")
-            else:
-                self.logger.warning("No conversation memory found in database. Starting fresh.")
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Load user profiles
+            self.user_profiles = {}
+            for uid, profile_data in data.get('user_profiles', {}).items():
+                self.user_profiles[uid] = UserProfile.from_dict(profile_data)
+
+            # Load other data
+            self.session_contexts = data.get('session_contexts', {})
+            self.active_tasks = data.get('active_tasks', {})
+            self.conversation_stats = defaultdict(int, data.get('conversation_stats', {}))
+
+            # Ensure all active tasks have proper datetime objects
+            for task_id, task_data in self.active_tasks.items():
+                if 'started_at' in task_data and isinstance(task_data['started_at'], str):
+                    try:
+                        task_data['started_at'] = datetime.fromisoformat(task_data['started_at'])
+                    except:
+                        task_data['started_at'] = datetime.now()
+
+            self.logger.info(f"Conversation memory loaded from {filepath}")
             return True
+
         except Exception as e:
-            self.logger.error(f"Error loading conversation memory from database: {e}")
+            self.logger.error(f"Error loading conversation memory: {e}")
             return False
 
     def update_appointment_status(self, user_id: str, appointment_id: str, status: str, appointment_date: datetime = None) -> None:
@@ -615,78 +615,25 @@ class ProgressiveConversationMemory:
             'medicine_reminders_count': len(profile.medicine_reminders),
             'prescription_summary_available': len(profile.prescription_summary) > 0
         }
-    # Add this helper function inside the ProgressiveConversationMemory class
-    def _calculate_next_utc_timestamp(self, times_list, user_timezone_str):
-        """Calculates the next upcoming alert time in UTC."""
-        try:
-            user_timezone = pytz.timezone(user_timezone_str)
-        except pytz.UnknownTimeZoneError:
-            user_timezone = pytz.timezone("UTC") # Fallback to UTC
-        now_user_tz = datetime.now(user_timezone)
-        next_alert_time = None
-
-    # Sort the times to find the next one in the day
-        sorted_times = sorted([time.fromisoformat(t) for t in times_list])
-
-        for t in sorted_times:
-            potential_alert = now_user_tz.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
-            if potential_alert > now_user_tz:
-                next_alert_time = potential_alert
-                break
-
-    # If all times for today have passed, schedule for the first time tomorrow
-        if next_alert_time is None:
-            tomorrow = now_user_tz + timedelta(days=1)
-            first_time_tomorrow = sorted_times[0]
-            next_alert_time = tomorrow.replace(hour=first_time_tomorrow.hour, minute=first_time_tomorrow.minute, second=0, microsecond=0)
-
-    # Convert the final alert time to a UTC ISO string
-        return next_alert_time.astimezone(pytz.utc).isoformat()
 
     def schedule_medicine_reminder(self, user_id: str, medicine_data: Dict[str, Any]) -> None:
         """Schedule medicine reminders for user"""
         profile = self.create_or_get_user(user_id)
 
-        # --- FIX: Calculate frequency and add start_date on the backend ---
-        times_list = medicine_data.get('times', [])
-        num_times = len(times_list)
-        frequency_text = "As prescribed"
-        if num_times == 1:
-            frequency_text = "Once a day"
-        elif num_times == 2:
-            frequency_text = "Twice a day"
-        elif num_times == 3:
-            frequency_text = "Thrice a day"
-        elif num_times > 3:
-            frequency_text = f"{num_times} times a day"
-        
-    # --- NEW: Calculate and store the next alert time in UTC ---
-        next_alert_utc = None
-        if times_list:
-            user_timezone = medicine_data.get("timezone", "UTC")
-            next_alert_utc = self._calculate_next_utc_timestamp(times_list, user_timezone)
-
         reminder = {
             'medicine_name': medicine_data['name'],
             'dosage': medicine_data['dosage'],
-            'frequency': frequency_text,  # Use the calculated frequency
-            'times': times_list,
+            'frequency': medicine_data['frequency'],
+            'times': medicine_data['times'],
             'duration_days': medicine_data['duration_days'],
-            'start_date': datetime.now().strftime('%Y-%m-%d'), # Add the start date automatically
+            'start_date': medicine_data['start_date'],
             'instructions': medicine_data.get('instructions', ''),
             'reminder_enabled': True,
-            'created_at': datetime.now().isoformat(),
-            'next_alert_utc': next_alert_utc  # <-- STORE THE UTC TIMESTAMP
+            'created_at': datetime.now().isoformat()
         }
-        # --- END FIX ---
 
-        # Avoid adding duplicate reminders
-        existing_reminders = {r['medicine_name'].lower() for r in profile.medicine_reminders}
-        if reminder['medicine_name'].lower() not in existing_reminders:
-            profile.medicine_reminders.append(reminder)
-            self.logger.info(f"Added medicine reminder for user {user_id}: {medicine_data['name']}")
-        else:
-            self.logger.warning(f"Reminder for {medicine_data['name']} already exists for user {user_id}. Skipping.")
+        profile.medicine_reminders.append(reminder)
+        self.logger.info(f"Added medicine reminder for user {user_id}: {medicine_data['name']}")
 
     def get_medicine_reminders(self, user_id: str) -> List[Dict[str, Any]]:
         """Get active medicine reminders for user"""
@@ -868,6 +815,12 @@ class ProgressiveConversationMemory:
             # Default if no time is found
             if not times:
                 times.append("09:00") # Default to a morning reminder
+            next_alert_utc = None
+            if times:
+                # We don't have the user's timezone here, so we'll default to UTC
+                # as a reliable standard for an automated feature.
+                user_timezone = "UTC" 
+                next_alert_utc = self._calculate_next_utc_timestamp(times, user_timezone)
 
             reminder = {
                 'medicine_name': med_name,
@@ -878,7 +831,8 @@ class ProgressiveConversationMemory:
                 'instructions': med.get('time', 'As directed by your doctor.'),
                 'source': 'prescription_upload', # To identify auto-generated reminders
                 'reminder_enabled': False, # User must manually enable it
-                'created_at': datetime.now().isoformat()
+                'created_at': datetime.now().isoformat(),
+                'next_alert_utc': next_alert_utc
             }
 
             profile.medicine_reminders.append(reminder)
