@@ -108,8 +108,8 @@ CORS(app, supports_credentials=True, resources={
             "https://saharasaathi.netlify.app",
             "https://sahara-sathi.onrender.com",
             "https://sehat-sahara.onrender.com",
-            "https://render-atua.onrender.com",
-            "*"  # Allow all origins for static files
+            "https://render-atua.onrender.com"
+             # Allow all origins for static files
         ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
@@ -2976,4 +2976,5 @@ if __name__ == "__main__":
     # Start the Flask application
 
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
+
 
