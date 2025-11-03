@@ -731,9 +731,38 @@
     </div>
 
 <script>
+    
     document.addEventListener('DOMContentLoaded', function() {
-        // const API_BASE_URL = 'https://sahara-sathi.onrender.com/v1';
-         const API_BASE_URL = '/api';
+        //const API_BASE_URL = 'https://sahara-sathi.onrender.com/v1';
+        const API_BASE_URL = '/api';
+        // --- ADD THIS ENTIRE NEW BLOCK ---
+async function clearSessionOnPageShow() {
+    // We must define API_BASE_URL here because this is a separate scope
+    const API_BASE_URL = '/api'; 
+    try {
+        console.log('Page is visible. Clearing session...');
+        // 1. Tell the server to destroy the session cookie
+        await fetch(`${API_BASE_URL}/v1/logout`, { 
+            method: 'POST',
+            credentials: 'include' // This sends your session cookie
+        });
+        
+        // 2. Clear any client-side tokens
+        localStorage.removeItem('sehatSaharaUser');
+        localStorage.removeItem('sehatSaharaDoctor');
+        localStorage.removeItem('authToken');
+
+        console.log('Session cleared successfully.');
+
+    } catch (error) {
+        console.error('Error during auto-logout:', error);
+    }
+}
+
+// This event fires EVERY time the page is shown,
+// including "back" button/gesture navigation.
+window.addEventListener('pageshow', clearSessionOnPageShow);
+// --- END OF NEW BLOCK ---
         // --- DOM Elements ---
         const authModal = document.getElementById('authModal');
         const loginBtn = document.getElementById('loginBtn');
@@ -1044,35 +1073,25 @@
             const password = document.getElementById('loginPassword').value;
             const role = document.getElementById('loginRole').value;
 
-            console.log('Login attempt:', { username, password: '***', role });
-            console.log('API_BASE_URL:', API_BASE_URL);
-            console.log('Full URL:', `${API_BASE_URL}/v1/login`);
-
             // Dummy logins for testing
             if (role === 'admin' && username === 'admin' && password === 'admin123') {
                 localStorage.setItem('sehatSaharaUser', JSON.stringify({patientId: 'admin', username: 'Admin User', email: 'admin@example.com', role: 'admin'}));
                 window.location.href = 'admin.html';
                 return;
             }
-
-
+            
+            
 
             try {
-                console.log('Making fetch request...');
                 const response = await fetch(`${API_BASE_URL}/v1/login`, {
                     method: 'POST',
                     credentials: 'include',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ patientId: username, password, role })
                 });
-                console.log('Response status:', response.status);
-                console.log('Response headers:', response.headers);
-
                 const data = await response.json();
-                console.log('Response data:', data);
 
                 if (response.ok && data.success) {
-                    console.log('Login successful, redirecting...');
                     localStorage.setItem('sehatSaharaUser', JSON.stringify(data.user));
                     if (data.token) {
                         localStorage.setItem('authToken', data.token);
@@ -1096,7 +1115,6 @@
                             window.location.href = 'patient.html';
                     }
                 } else {
-                    console.log('Login failed:', data.message);
                     showApiError(data.message || 'Invalid credentials.');
                 }
             } catch (error) {
@@ -1104,8 +1122,8 @@
                 showApiError('Could not connect to the server.');
             } finally {
                 button.disabled = false;
-                  // Re-translate button text if language was changed
-                  const t = translations[currentLanguage] || translations.en;
+                 // Re-translate button text if language was changed
+                 const t = translations[currentLanguage] || translations.en;
                 button.textContent = t.login_button;
             }
         });
@@ -1291,4 +1309,3 @@
 </script>
 </body>
 </html>
-
