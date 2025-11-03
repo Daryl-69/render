@@ -22,7 +22,7 @@ self.addEventListener('fetch', event => {
 });
 
 // In sw.js
-const API_BASE_URL = 'https://sahara-sathi.onrender.com';
+const API_BASE_URL = 'https://render-atua.onrender.com';
 
 // NEW: Listener for push events from the server
 self.addEventListener('push', event => {
@@ -90,3 +90,4 @@ self.addEventListener('notificationclick', event => {
         );
     }
 });
+
