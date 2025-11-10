@@ -67,7 +67,7 @@ from ko import ProgressiveResponseGenerator
 # Remove crisis detector import and usage
 # from optimized_crisis_detector import OptimizedCrisisDetector  # removed
 
-from ollama_integration import sehat_sahara_client, groq_scout
+from api_ollama_integration import sehat_sahara_client, groq_scout
 from conversation_memory import conversation_memory # <--- ADD THIS LINE
 # --- NEW IMPORTS FOR PUSH NOTIFICATIONS ---
 from pywebpush import webpush, WebPushException
@@ -170,7 +170,7 @@ CORS(app, supports_credentials=True, resources={
             "https://sahara-sathi.onrender.com",
             "https://sehat-sahara.onrender.com",
             "https://visionary-heliotrope-8203e0.netlify.app",
-            "https://render-atua.onrender.com" 
+            "https://render-atua.onrender.com"  # Allow all origins for static files
         ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
@@ -306,6 +306,17 @@ def check_and_send_reminders():
                                     "body": f"It's time to take: {reminder['medicine_name']} ({reminder.get('dosage', 'N/A')})",
                                     # --- ADDED: More specific icon ---
                                     "icon": "https://i.ibb.co/bmdxHqN/pills.png",
+                                    # --- START: NEW ALARM OPTIONS ---
+                                    # 1. (Optional) Vibrate pattern (for mobile)
+                                    "vibrate": [200, 100, 200, 100, 200],
+                                    
+                                    # 2. Custom sound file (must be in your static folder)
+                                    # In chatbot.py
+                                    "sound": "https://saharasaathi.netlify.app/static/sound/alarm.mp3", 
+                                    
+                                    # 3. (Recommended) Keep notification on screen until user interacts
+                                    "requireInteraction": True, 
+                                    # --- END: NEW ALARM OPTIONS ---
                                     "actions": [
                                         {"action": "mark-taken", "title": "Mark as Taken"},
                                         {"action": "close", "title": "Close"}
@@ -3894,4 +3905,3 @@ if __name__ == "__main__":
     # Start the Flask application
 
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
-
